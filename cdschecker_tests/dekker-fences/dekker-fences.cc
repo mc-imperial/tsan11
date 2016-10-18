@@ -5,8 +5,10 @@
  *   http://www.justsoftwaresolutions.co.uk/threading/
  */
 
-#include "cds_atomic.h"
+
 #include "cds_threads.h"
+//#include "cds_atomic.h"
+#include <atomic>
 
 #include "librace.h"
 

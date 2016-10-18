@@ -8,10 +8,10 @@ OBJECTS = main.o my_queue.o
 all: $(TESTNAME)
 
 $(TESTNAME): $(HEADERS) $(OBJECTS)
-	$(CC) -o $@ $(OBJECTS) $(CFLAGS) $(LDFLAGS)
+	$(CXX) -o $@ $(OBJECTS) $(CXXFLAGS) $(LDFLAGS)
 
 %.o: %.c
-	$(CC) -c -o $@ $< $(CFLAGS)
+	$(CXX) -c -o $@ $< $(CXXFLAGS)
 
 clean:
 	rm -f $(TESTNAME) *.o

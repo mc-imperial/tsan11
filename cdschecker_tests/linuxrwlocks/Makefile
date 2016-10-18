@@ -5,7 +5,7 @@ TESTNAME = linuxrwlocks
 all: $(TESTNAME)
 
 $(TESTNAME): $(TESTNAME).cc
-	$(CC) -o $@ $< $(CFLAGS) $(LDFLAGS)
+	$(CXX) -o $@ $< $(CXXFLAGS) $(LDFLAGS)
 
 clean:
 	rm -f $(TESTNAME) *.o
