@@ -1,0 +1,12 @@
+
+# IntelliJ.
+*.iml
+/.idea/
+
+# Temp.
+*~
+*.bak
+
+/llvm/
+/cdschecker/
+
