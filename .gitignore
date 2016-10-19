@@ -8,5 +8,6 @@
 *.bak
 
 /llvm/
-/cdschecker/
+/llvm_patched/
+/build/
 
