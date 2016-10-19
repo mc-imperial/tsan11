@@ -24,5 +24,5 @@ done
 AVG_DATA_RACE=$((COUNT_DATA_RACE * 100 / TOTAL_RUN))
 AVG_TIME=$((COUNT_TIME / TOTAL_RUN))
 
-echo "Runs: $TOTAL_RUN Data races: $COUNT_DATA_RACE Time: ${COUNT_TIME}ms"
-echo "Data race rate: ${AVG_DATA_RACE}% Avg time: ${AVG_TIME}ms"
+echo "Runs: $TOTAL_RUN Data_races: $COUNT_DATA_RACE Time: ${COUNT_TIME} ms Data_race_rate: ${AVG_DATA_RACE} % Avg_time: ${AVG_TIME} ms"
+
