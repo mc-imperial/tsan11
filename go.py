@@ -24,6 +24,11 @@ cdschecker_build = os.path.join(build_root, "cdschecker_build")
 litmus_tests = os.path.join(source_root, "litmus_tests")
 litmus_tests_build = os.path.join(build_root, "litmus_tests_build")
 
+firefox = os.path.join(build_root, "firefox")
+firefox_build = os.path.join(build_root, "firefox_build")
+mozconfig = os.path.join(source_root, "scripts", "mozconfig")
+
+
 # class CDSCheckerBuildVersion(object):
 #
 #     def __init__(self, suffix: str, sanitize: bool, patched_llvm: bool):
@@ -98,12 +103,6 @@ def remove(path: str):
             raise
 
 
-def add_path(directory: str):
-    os.environ["PATH"] = directory + os.pathsep + os.environ["PATH"]
-
-
-def reset_path():
-    os.environ["PATH"] = saved_path
 
 # Main targets #
 
@@ -114,8 +113,7 @@ def get_llvm():
         print("skipping")
         return
     mkdir_p(llvm)
-    os.chdir(llvm)
-    subprocess.check_call("get-llvm.sh")
+    subprocess.check_call("get-llvm.sh", cwd=llvm)
 
 
 def build_llvm():
@@ -125,9 +123,8 @@ def build_llvm():
         return
     get_llvm()
     mkdir_p(llvm_build)
-    os.chdir(llvm_build)
-    subprocess.check_call(["cmake", "-G", "Unix Makefiles", "-DCMAKE_BUILD_TYPE=Release", llvm])
-    subprocess.check_call(["make", "-j8"])
+    subprocess.check_call(["cmake", "-G", "Unix Makefiles", "-DCMAKE_BUILD_TYPE=Release", llvm], cwd=llvm_build)
+    subprocess.check_call(["make", "-j8"], cwd=llvm_build)
 
 
 def get_llvm_patched():
@@ -138,8 +135,7 @@ def get_llvm_patched():
     get_llvm()
     rmtree(llvm_patched_lib_tsan)
     copytree(llvm, llvm_patched)
-    os.chdir(llvm_patched_lib_tsan)
-    subprocess.check_call(["svn", "patch", patch_file])
+    subprocess.check_call(["svn", "patch", patch_file], cwd=llvm_patched_lib_tsan)
 
 
 def build_llvm_patched():
@@ -149,9 +145,8 @@ def build_llvm_patched():
         return
     get_llvm_patched()
     mkdir_p(llvm_patched_build)
-    os.chdir(llvm_patched_build)
-    subprocess.check_call(["cmake", "-G", "Unix Makefiles", "-DCMAKE_BUILD_TYPE=Release", llvm_patched])
-    subprocess.check_call(["make", "-j8"])
+    subprocess.check_call(["cmake", "-G", "Unix Makefiles", "-DCMAKE_BUILD_TYPE=Release", llvm_patched], cwd=llvm_patched_build)
+    subprocess.check_call(["make", "-j8"], cwd=llvm_patched_build)
 
 
 def build_cdschecker(config: BuildConfig):
@@ -161,13 +156,10 @@ def build_cdschecker(config: BuildConfig):
     else:
         build_llvm()
     copytree(cdschecker, cdschecker_build + config.suffix)
-    os.chdir(cdschecker_build + config.suffix)
-    try:
-        add_path(llvm_patched_build_bin if config.patched_llvm else llvm_build_bin)
-        os.environ["SANITIZE"] = "-fsanitize=thread" if config.sanitize else ""
-        subprocess.check_call(["make"])
-    finally:
-        reset_path()
+    new_env = os.environ.copy()
+    new_env["PATH"] = (llvm_patched_build_bin if config.patched_llvm else llvm_build_bin) + os.pathsep + new_env["PATH"]
+    new_env["SANITIZE"] = "-fsanitize=thread" if config.sanitize else ""
+    subprocess.check_call(["make"], cwd=cdschecker_build+config.suffix, env=new_env)
 
 
 def run_cdschecker(config: BuildConfig):
@@ -177,14 +169,14 @@ def run_cdschecker(config: BuildConfig):
         print("skipping")
         return
     build_cdschecker(config)
-    os.chdir(cdschecker_build + config.suffix)
     remove(results_file)
     with io.open(results_file, "w+") as f:
         subprocess.run(
             [os.path.join(cdschecker_build + config.suffix, "test_all.sh")],
             check=True,
             stdout=f,
-            stderr=subprocess.STDOUT)
+            stderr=subprocess.STDOUT,
+            cwd=cdschecker_build + config.suffix)
 
 
 def build_litmus_tests(config: BuildConfig):
@@ -194,13 +186,10 @@ def build_litmus_tests(config: BuildConfig):
     else:
         build_llvm()
     copytree(litmus_tests, litmus_tests_build + config.suffix)
-    os.chdir(litmus_tests_build + config.suffix)
-    try:
-        add_path(llvm_patched_build_bin if config.patched_llvm else llvm_build_bin)
-        os.environ["SANITIZE"] = "-fsanitize=thread" if config.sanitize else ""
-        subprocess.check_call(["make"])
-    finally:
-        reset_path()
+    new_env = os.environ.copy()
+    new_env["PATH"] = (llvm_patched_build_bin if config.patched_llvm else llvm_build_bin) + os.pathsep + new_env["PATH"]
+    new_env["SANITIZE"] = "-fsanitize=thread" if config.sanitize else ""
+    subprocess.check_call(["make"], cwd=litmus_tests_build+config.suffix, env=new_env)
 
 
 def run_litmus_tests(config: BuildConfig):
@@ -210,17 +199,52 @@ def run_litmus_tests(config: BuildConfig):
         print("skipping")
         return
     build_litmus_tests(config)
-    os.chdir(litmus_tests_build + config.suffix)
     remove(results_file)
     with io.open(results_file, "w+") as f:
         subprocess.run(
             [os.path.join(litmus_tests_build + config.suffix, "run_all.sh")],
             check=True,
             stdout=f,
-            stderr=subprocess.STDOUT)
+            stderr=subprocess.STDOUT,
+            cwd=litmus_tests_build+config.suffix)
+
+
+def get_firefox():
+    print("get_firefox")
+    if fast_check and os.path.exists(firefox):
+        print("skipping")
+        return
+    mkdir_p(firefox)
+    subprocess.check_call(["hg", "clone", "https://hg.mozilla.org/mozilla-central/", os.curdir], cwd=firefox)
+    subprocess.check_call(["hg", "update", "298600"], cwd=firefox)
+    shutil.copyfile(mozconfig, os.path.join(firefox, "mozconfig"))
+
+
+def build_firefox(config: BuildConfig):
+    print("build_firefox" + config.suffix)
+    if fast_check and os.path.exists(firefox_build + config.suffix):
+        print("skipping")
+    get_firefox()
+    if config.patched_llvm:
+        build_llvm_patched()
+    else:
+        build_llvm()
+    mkdir_p(firefox_build + config.suffix)
+    new_env = os.environ.copy()
+    new_env["MOZ_OBJDIR"] = firefox_build + config.suffix
+    new_env["PATH"] = (llvm_patched_build_bin if config.patched_llvm else llvm_build_bin) + os.pathsep + new_env["PATH"]
+    new_env["CFLAGS"] = "-fsanitize=thread -fPIC -pie" if config.sanitize else ""
+    new_env["CXXFLAGS"] = "-fsanitize=thread -fPIC -pie" if config.sanitize else ""
+    new_env["LDFLAGS"] = "-fsanitize=thread -fPIC -pie" if config.sanitize else ""
+    subprocess.check_call(
+        ["make", "-f", "client.mk"],
+        env=new_env,
+        cwd=firefox)
+
 
 
 if __name__ == "__main__":
-    for config in [config_normal, config_tsan, config_tsan11]:
-        run_cdschecker(config)
-        run_litmus_tests(config)
+    # for config in [config_normal, config_tsan, config_tsan11]:
+    #     run_cdschecker(config)
+    #     run_litmus_tests(config)
+    build_firefox()

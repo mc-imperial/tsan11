@@ -11,6 +11,9 @@ export TSAN11_BUILD_ROOT=/data/tsan11/build
 
 export PATH=${TSAN11_SOURCE_ROOT}/scripts:$PATH
 
+# should get set again later
+export MOZ_OBJDIR=${TSAN11_BUILD_ROOT}/tried_to_build_firefox_without_setting_MOZ_OBJDIR/
+
 #export PYTHONPATH=${TSAN11_SOURCE_ROOT}/scripts:$PYTHONPATH
 
 bash

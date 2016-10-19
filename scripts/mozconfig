@@ -1,0 +1,39 @@
+#mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/objdir-ff-tsan
+mk_add_options MOZ_MAKE_FLAGS=-j12
+
+# Enable LLVM specific code and build workarounds
+ac_add_options --enable-thread-sanitizer
+# If clang is already in your $PATH, then these can simply be:
+#   export CC=clang
+#   export CXX=clang++
+export CC=clang
+export CXX=clang++
+
+# llvm-symbolizer displays much more complete backtraces when data races are detected.
+# If it's not already in your $PATH, then uncomment this next line:
+export LLVM_SYMBOLIZER=llvm-symbolizer
+
+# Add TSan to our compiler flags
+#export CFLAGS="-fsanitize=thread -fPIC -pie"
+#export CXXFLAGS="-fsanitize=thread -fPIC -pie"
+
+# Additionally, we need the TSan flag during linking. Normally, our C/CXXFLAGS would
+# be used during linking as well but there is at least one place in our build where
+# our CFLAGS are not added during linking.
+# Note: The use of this flag causes Clang to automatically link the TSan runtime :)
+#export LDFLAGS="-fsanitize=thread -fPIC -pie"
+
+# These three are required by TSan
+ac_add_options --disable-jemalloc
+ac_add_options --disable-crashreporter
+ac_add_options --disable-elf-hack
+
+# Keep symbols to symbolize TSan traces
+export MOZ_DEBUG_SYMBOLS=1
+ac_add_options --enable-debug-symbols
+ac_add_options --disable-install-strip
+
+# Settings for an opt build
+ac_add_options --enable-optimize="-O2 -gline-tables-only"
+ac_add_options --disable-debug
+
