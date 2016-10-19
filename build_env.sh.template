@@ -1,0 +1,17 @@
+#!/bin/bash
+set -x
+set -e
+set -u
+
+export TSAN11_SOURCE_ROOT=/data/tsan11
+export TSAN11_BUILD_ROOT=/data/tsan11/build
+
+
+## No need to edit below here:
+
+export PATH=${TSAN11_SOURCE_ROOT}/scripts:$PATH
+
+#export PYTHONPATH=${TSAN11_SOURCE_ROOT}/scripts:$PYTHONPATH
+
+bash
+
