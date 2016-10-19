@@ -1,0 +1,65 @@
+Name                          |Race?    |Cause of race                |Old tsan |New tsan |Behaviour|Interesting behaviour                            |Old tsan |New tsan
+------------------------------+---------+-----------------------------+---------+---------+---------+-------------------------------------------------+---------+---------
+simple_consume                |No       |-                            |         |No       |No       |-                                                |         |No
+simple_rel_acq                |No       |-                            |         |No       |No       |-                                                |         |No
+simple_relaxed                |No       |-                            |         |No       |No       |-                                                |         |No
+simple_seq_cst                |No       |-                            |         |No       |No       |-                                                |         |No
+race_blocked_rs               |Yes      |blocker blocks the RS        |         |Yes      |No       |-                                                |         |No
+race_memory                   |Yes      |Simple race using memcpy     |         |Yes      |No       |-                                                |         |No
+race_rel_acq                  |Yes      |acquire may not see release  |         |Yes      |No       |-                                                |         |No
+race_relaxed                  |Yes      |No synchronisation           |         |Yes      |No       |-                                                |         |No
+race_simple                   |Yes      |Simple race using assignment |         |Yes      |No       |-                                                |         |No
+race_write_after_release      |Yes      |Write occurs after release   |         |Yes      |No       |-                                                |         |No
+rmw_simple_sync               |No       |-                            |         |No       |No       |-                                                |         |No
+rmw_extend_rs                 |No       |-                            |         |No       |No       |-                                                |         |No
+rmw_block_single_rs           |Yes      |blocker thread blocks the RS |         |Yes      |No       |-                                                |         |No
+rmw_multiple_rs               |No       |-                            |         |No       |No       |-                                                |         |No
+rmw_extend_multiple_rs        |No       |-                            |         |No       |No       |-                                                |         |No
+rmw_update_multiple_rs        |No       |-                            |         |No       |No       |-                                                |         |No
+rmw_collapse_multiple_rs      |Yes      |setter1 blocks RS from other |         |Yes      |No       |-                                                |         |No
+rmw_extend_block_rs           |Yes      |blocker blocks RS from other |         |Yes      |No       |-                                                |         |No
+rmw_many_extended_rs          |No       |-                            |         |No       |No       |-                                                |         |No
+rmw_many_blocked_rs           |Yes      |T5 blocks the other RSs      |         |Yes      |No       |-                                                |         |No
+rmw_collapse_continue_rs      |No       |-                            |         |No       |No       |-                                                |         |No
+sb_rel_acq                    |No       |-                            |         |No       |Yes      |Do not see stores due to store buffering         |         |Yes
+sb_relaxed                    |No       |-                            |         |No       |Yes      |Do not see stores due to store buffering         |         |Yes
+sb_seq_cst                    |No       |-                            |         |No       |No       |Must not see both 0                              |         |No
+iriw_rel_acq                  |No       |-                            |         |No       |Yes      |Each reader sees a different store               |         |Yes
+iriw_relaxed                  |No       |-                            |         |No       |Yes      |Each reader sees a different store               |         |Yes
+corr_single_thread            |No       |-                            |         |No       |No       |Second read does not go back in mo               |         |No
+corr_sync                     |No       |-                            |         |No       |No       |Second reader syncs and reads forward in mo      |         |No
+corr_multi_sync               |No       |-                            |         |No       |No       |2nd and 3rd read later than 1st, but unordered   |         |No
+corr_fence                    |No       |-                            |         |No       |No       |First load restricts but not second              |         |No
+cowr_sync                     |No       |-                            |         |No       |No       |Read cannot see the first write                  |         |No
+cowr_sync_trans               |No       |-                            |         |No       |No       |Read cannot see the first write                  |         |No
+cas_strong_sync               |No       |-                            |         |No       |No       |-                                                |         |No
+cas_strong_relaxed            |Yes      |CAS does not sync on success |         |Yes      |No       |-                                                |         |No
+cas_strong_fail               |Yes      |CAS does not sync on failure |         |Yes/todo |No       |-                                                |         |No
+fence_rel                     |No       |-                            |         |No       |No       |-                                                |         |No
+fence_acq                     |No       |-                            |         |No       |No       |-                                                |         |No
+fence_rel_acq                 |No       |-                            |         |No       |No       |-                                                |         |No
+fence_rel_before_write        |Yes      |Fence sequenced before write |         |Yes      |No       |-                                                |         |No
+fence_acq_after_read          |Yes      |Fence sequenced after read   |         |Yes      |No       |-                                                |         |No
+fence_multi_acquire           |No       |-                            |         |No       |No       |-                                                |         |No
+fence_rel_before_store        |No       |-                            |         |No       |No       |-                                                |         |No
+fence_rel_after_store         |No       |-                            |         |No       |No       |-                                                |         |No
+fence_rmw_extend_hrs          |No       |-                            |         |No       |No       |-                                                |         |No
+fence_rmw_multi_hrs           |No       |-                            |         |No       |No       |-                                                |         |No
+fence_rmw_block_hrs           |Yes      |blocker blocks the hrs       |         |Yes      |No       |-                                                |         |No
+fence_rmw_collapse_hrs        |No       |-                            |         |No       |No       |-                                                |         |No
+fence_rmw_collapse_multi_hrs  |Yes      |Setter resets hrs            |         |Yes      |No       |-                                                |         |No
+fence_rel_after_rmw           |No       |-                            |         |No       |No       |-                                                |         |No
+fence_rel_before_rmw          |No       |-                            |         |No       |No       |-                                                |         |No
+sc_write_read                 |No       |-                            |         |No       |Yes      |SC read cannot see 2, but can see 1              |         |Yes
+sc_write_fence                |No       |-                            |         |No       |Yes      |Fence forces read to see 2 onward                |         |Yes
+sc_fence_read                 |No       |-                            |         |No       |Yes      |Fence forces read to see 1 onward                |         |Yes
+sc_fence_fence                |No       |-                            |         |No       |Yes      |Fence forces read to see 1 onward                |         |Yes
+sc_write_fence_non_sc         |No       |-                            |         |No       |Yes      |Single fence has no effect                       |         |Yes
+sc_write_fence_single_sc      |No       |-                            |         |No       |Yes      |Load of y unaffected                             |         |Yes
+sc_write_fence_write          |No       |-                            |         |No       |Yes      |SC order does not force load to see second write |         |Yes
+sc_fence_read_non_sc          |No       |-                            |         |No       |Yes      |Single fence has no effect                       |         |Yes
+sc_fence_read_no_cowr         |No       |-                            |         |No       |Yes      |SC fence forces x to read 2 but not y            |         |Yes
+sc_fence_read_no_corr         |No       |-                            |         |No       |Yes      |Second read of y unaffected as no CoRR           |         |Yes
+stress_stores                 |No       |-                            |         |No       |No       |-                                                |         |No
+stress_loads                  |No       |-                            |         |No       |No       |-                                                |         |No
+stress_buffers                |No       |-                            |         |No       |No       |-                                                |         |No
