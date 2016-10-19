@@ -1,0 +1,1792 @@
+Index: CMakeLists.txt
+===================================================================
+--- CMakeLists.txt	(revision 272794)
++++ CMakeLists.txt	(working copy)
+@@ -42,6 +42,7 @@
+   rtl/tsan_report.cc
+   rtl/tsan_rtl.cc
+   rtl/tsan_rtl_mutex.cc
++  rtl/tsan_relaxed.cc
+   rtl/tsan_rtl_proc.cc
+   rtl/tsan_rtl_report.cc
+   rtl/tsan_rtl_thread.cc
+@@ -84,6 +85,7 @@
+   rtl/tsan_mutex.h
+   rtl/tsan_mutexset.h
+   rtl/tsan_platform.h
++  rtl/tsan_relaxed.h
+   rtl/tsan_report.h
+   rtl/tsan_rtl.h
+   rtl/tsan_stack_trace.h
+Index: rtl/tsan_clock.cc
+===================================================================
+--- rtl/tsan_clock.cc	(revision 272794)
++++ rtl/tsan_clock.cc	(working copy)
+@@ -158,14 +158,14 @@
+   }
+ }
+ 
+-void ThreadClock::release(ClockCache *c, SyncClock *dst) const {
++void ThreadClock::release(ClockCache *c, VClockCache *vc, SyncClock *dst) const {
+   DCHECK_LE(nclk_, kMaxTid);
+   DCHECK_LE(dst->size_, kMaxTid);
+ 
+-  if (dst->size_ == 0) {
++  if (dst->size_ == 0) { // TODO used by locks, not yet compatible with VVC.
+     // ReleaseStore will correctly set release_store_tid_,
+     // which can be important for future operations.
+-    ReleaseStore(c, dst);
++    ReleaseStore(c, vc, dst);
+     return;
+   }
+ 
+@@ -212,11 +212,17 @@
+     dst->elem(tid_).reused = reused_;
+ }
+ 
+-void ThreadClock::ReleaseStore(ClockCache *c, SyncClock *dst) const {
++void ThreadClock::ReleaseStore(ClockCache *c, VClockCache *vc, SyncClock *dst) const {
+   DCHECK_LE(nclk_, kMaxTid);
+   DCHECK_LE(dst->size_, kMaxTid);
+   CPP_STAT_INC(StatClockStore);
+ 
++  // If vvc is in use, must reset then release.
++  if (dst->vvc_in_use_) {
++    CPP_STAT_INC(StatCollapseVVC);
++    dst->Reset(c, vc);
++  }
++
+   // Check if we need to resize dst.
+   if (dst->size_ < nclk_)
+     dst->Resize(c, nclk_);
+@@ -253,10 +259,10 @@
+   dst->elem(tid_).reused = reused_;
+ }
+ 
+-void ThreadClock::acq_rel(ClockCache *c, SyncClock *dst) {
++void ThreadClock::acq_rel(ClockCache *c, VClockCache *vc, SyncClock *dst) {
+   CPP_STAT_INC(StatClockAcquireRelease);
+   acquire(c, dst);
+-  ReleaseStore(c, dst);
++  ReleaseStore(c, vc, dst);
+ }
+ 
+ // Updates only single element related to the current thread in dst->clk_.
+@@ -371,7 +377,9 @@
+     , release_store_reused_()
+     , tab_()
+     , tab_idx_()
+-    , size_() {
++    , size_()
++    , vclock_()
++    , vvc_in_use_() {
+   for (uptr i = 0; i < kDirtyTids; i++)
+     dirty_tids_[i] = kInvalidTid;
+ }
+@@ -383,7 +391,50 @@
+   CHECK_EQ(tab_idx_, 0);
+ }
+ 
+-void SyncClock::Reset(ClockCache *c) {
++void SyncClock::CopyClock(ClockCache *c, VClockCache *vc, SyncClock *dst) const {
++  // Must copy to empty clock.
++  //CHECK_EQ(dst->size_, 0);
++  //CHECK_EQ(dst->tab_, 0);
++  //CHECK_EQ(dst->tab_idx_, 0);
++  dst->Reset(c, vc);
++
++  if (size_ == 0)
++    return;
++  dst->Resize(c, size_);
++
++  // Copy raw data, this is duplicated, needs cleaning.
++  if (dst->size_ <= ClockBlock::kClockCount) {
++    internal_memcpy(dst->tab_, tab_, sizeof(*dst->tab_));
++  } else {
++    for (unsigned idx = 0; idx < dst->size_; idx += ClockBlock::kClockCount) {
++      u32 tab_idx = tab_->table[idx / ClockBlock::kClockCount];
++      ClockBlock *cb = ctx->clock_alloc.Map(tab_idx);
++      tab_idx = dst->tab_->table[idx / ClockBlock::kClockCount];
++      ClockBlock *cb_new = ctx->clock_alloc.Map(tab_idx);
++      internal_memcpy(cb_new->clock, cb->clock, sizeof(*cb->clock));
++    }
++  }
++}
++
++void SyncClock::JoinClock(ClockCache *c, SyncClock *src) {
++  if (src->size_ > size_)
++    Resize(c, src->size_);
++
++  for (uptr i = 0; i < src->size_; i++) {
++    ClockElem &ce = elem(i);
++    ClockElem &src_ce = src->elem(i);
++    ce.epoch = max(ce.epoch, src_ce.epoch);
++    ce.reused = 0;
++  }
++
++  // Not really sure what this does but w/e we'll go with it.
++  for (unsigned i = 0; i < kDirtyTids; i++)
++    dirty_tids_[i] = kInvalidTid;
++  release_store_tid_ = kInvalidTid;
++  release_store_reused_ = 0;
++}
++
++void SyncClock::Reset(ClockCache *c, VClockCache *vc) {
+   if (size_ == 0) {
+     // nothing
+   } else if (size_ <= ClockBlock::kClockCount) {
+@@ -402,6 +453,25 @@
+   release_store_reused_ = 0;
+   for (uptr i = 0; i < kDirtyTids; i++)
+     dirty_tids_[i] = kInvalidTid;
++
++  // For the VVC
++  if (vvc_in_use_) {
++    for (unsigned idx = 0; idx < VClockBlock::kNumElems; ++idx) {
++      if (vclock_->sizes_[idx] == 0)
++        continue;
++      if (vclock_->sizes_[idx] <= ClockBlock::kClockCount) {
++        ctx->clock_alloc.Free(c, vclock_->clocks_[idx]);
++      } else {
++        ClockBlock *cb = ctx->clock_alloc.Map(vclock_->clocks_[idx]);
++        for (uptr i = 0; i < vclock_->sizes_[idx]; i += ClockBlock::kClockCount)
++          ctx->clock_alloc.Free(c, cb->table[i / ClockBlock::kClockCount]);
++        ctx->clock_alloc.Free(c, vclock_->clocks_[idx]);
++      }
++      vclock_->sizes_[idx] = 0;
++    }
++    ctx->vclock_alloc.Free(vc, vclock_idx_);
++    vvc_in_use_ = false;
++  }
+ }
+ 
+ ClockElem &SyncClock::elem(unsigned tid) const {
+@@ -424,4 +494,167 @@
+       release_store_tid_, release_store_reused_,
+       dirty_tids_[0], dirty_tids_[1]);
+ }
++
++void ThreadClock::NonReleaseStore(ClockCache *c, VClockCache *vc,
++                                  SyncClock *dst, SyncClock *Frel_clock) const {
++  // No VVC, block if relaxed write is from non-releasing thread.
++  if (!dst->vvc_in_use_) {
++    if (dst->release_store_tid_ != tid_)
++      dst->Reset(c, vc);
++    return;
++  }
++  CPP_STAT_INC(StatCollapseVVC);
++
++  // Try and find VC in VVC for this thread.
++  unsigned idx;
++  for (idx = 0; idx < dst->vclock_->last_free_idx_; ++idx) {
++    if (dst->vclock_->tids_[idx] == tid_)
++      break;
++  }
++
++  // If no VC, block all RS and return.
++  if (idx == dst->vclock_->last_free_idx_) {
++    dst->Reset(c, vc);
++    return;
++  }
++
++  // If VC found, save this RS and block all others.
++  u32 tab_idx = dst->vclock_->clocks_[idx];
++  u32 size = dst->vclock_->sizes_[idx];
++  dst->vclock_->clocks_[idx] = 0;
++  dst->vclock_->sizes_[idx] = 0;
++  dst->Reset(c, vc);
++  dst->tab_idx_ = tab_idx;
++  dst->size_ = size;
++  dst->tab_ = ctx->clock_alloc.Map(tab_idx);
++  dst->release_store_tid_ = tid_;
++}
++
++void ThreadClock::NonReleaseStore2(ClockCache *c, VClockCache *vc, SyncClock *dst, SyncClock *Frel_clock) const {
++  CHECK(dst->release_store_tid_ == tid_ || dst->size_ == 0);
++  if (Frel_clock->size_ != 0 &&
++      (dst->size_ == 0 || (dst->get(tid_) < Frel_clock->get(tid_)))) {
++    Frel_clock->CopyClock(c, vc, dst);
++    dst->release_store_tid_ = tid_;
++  }
++}
++
++void ThreadClock::RMW(ClockCache *c, VClockCache *vc, SyncClock *dst,
++    bool is_acquire, bool is_release,
++    SyncClock *Facq_clock, SyncClock *Frel_clock) {
++  // acquire is simple, just the same as non RMW.
++  if (is_acquire)
++    acquire(c, dst);
++  else
++    Facq_clock->JoinClock(c, dst);
++
++  // If not release, and no fences. All RSs will continue.
++  if (!is_release && Frel_clock->size_ == 0)
++    return;
++
++  // Check for simple case, where there is no current RS or there is one with
++  // the same tid.
++  if (!dst->vvc_in_use_ && (dst->size_ == 0 || dst->release_store_tid_ == tid_)) {
++    if (is_release)
++      release(c, vc, dst);
++    else
++      NonReleaseStore2(c, vc, dst, Frel_clock);
++    return;
++  }
++
++  // In the case of a relaxed RMW, the VVC does not need to change, because:
++  //  - If the thread then does a release store, the VVC is not used, as a
++  //    normal release to the VC is appropriate.
++  //  - If the thread then does a relaxed store, we have:
++  //   - The fence occurred before the last release, so Frel < Ct, and so
++  //     joining Frel onto the VC won't change anything, leaving it correct.
++  //   - The fence occurred after the last release, so setting the VC to Frel as
++  //     normal is correct.
++  //
++  // At this point, we have established that there will now be multiple (h)rs.
++  // If the VVC is still not being used, release_tid must be set to a bogus
++  // value so the thread that did the first release knows to clear the VC.
++  if (!is_release) {
++     dst->JoinClock(c, Frel_clock);
++     dst->release_store_tid_ = -1;
++     return;
++  }
++
++  // Not so simple case where vcc is not in use, but need to migrate to it.
++  if (!dst->vvc_in_use_) {
++    CPP_STAT_INC(StatInitVVC);
++    dst->vclock_idx_ = ctx->vclock_alloc.Alloc(vc);
++    dst->vclock_ = ctx->vclock_alloc.Map(dst->vclock_idx_);
++    dst->vclock_->tids_[0] = dst->release_store_tid_;
++    dst->vclock_->clocks_[0] = dst->tab_idx_;
++    dst->vclock_->sizes_[0] = dst->size_;
++    ClockBlock *old_tab = dst->tab_;
++    // Allocate new tabs for SyncVar clock and allocate space equal to old size.
++    uptr nclk = dst->size_;
++    dst->size_ = 0;
++    dst->tab_ = 0;
++    dst->tab_idx_ = 0;
++    dst->Resize(c, nclk);
++    // Set new clock to moved clock, merge will happen later.
++    if (dst->size_ <= ClockBlock::kClockCount) {
++      internal_memcpy(dst->tab_, old_tab, sizeof(*dst->tab_));
++    } else {
++      for (unsigned idx = 0; idx < dst->size_; idx += ClockBlock::kClockCount) {
++        u32 tab_idx = old_tab->table[idx / ClockBlock::kClockCount];
++        ClockBlock *cb = ctx->clock_alloc.Map(tab_idx);
++        tab_idx = dst->tab_->table[idx / ClockBlock::kClockCount];
++        ClockBlock *cb_new = ctx->clock_alloc.Map(tab_idx);
++        internal_memcpy(cb_new->clock, cb->clock, sizeof(*cb->clock));
++      }
++    }
++    dst->vvc_in_use_ = true;
++    dst->vclock_->last_free_idx_ = 1;
++  }
++
++  // vvc is in use and may need to add thread clock to vvc, but before, merge
++  // with the main clock.
++  release(c, vc, dst);
++
++  // Remove existing entry if it exists (easier to do but more expensive).
++  // Create new entry.
++  unsigned idx;
++  for (idx = 0; idx < dst->vclock_->last_free_idx_; ++idx) {
++    if (dst->vclock_->tids_[idx] == tid_)
++      break;
++  }
++  if (idx == VClockBlock::kNumElems) {
++    Printf("Too many VCs for RMW.");
++    Die();
++  }
++  if (idx != dst->vclock_->last_free_idx_) {
++    CPP_STAT_INC(StatModifyVVC);
++    if (dst->vclock_->sizes_[idx] <= ClockBlock::kClockCount) {
++      ctx->clock_alloc.Free(c, dst->vclock_->clocks_[idx]);
++    } else {
++      ClockBlock *cb = ctx->clock_alloc.Map(dst->vclock_->clocks_[idx]);
++      for (uptr i = 0; i < dst->vclock_->sizes_[idx]; i += ClockBlock::kClockCount)
++        ctx->clock_alloc.Free(c, cb->table[i / ClockBlock::kClockCount]);
++      ctx->clock_alloc.Free(c, dst->vclock_->clocks_[idx]);
++    }
++  } else {
++    CPP_STAT_INC(StatAddToVVC);
++    ++dst->vclock_->last_free_idx_;
++  }
++  SyncClock tmp;
++  ReleaseStore(c, vc, &tmp);
++  dst->vclock_->tids_[idx] = tmp.release_store_tid_;
++  dst->vclock_->clocks_[idx] = tmp.tab_idx_;
++  dst->vclock_->sizes_[idx] = tmp.size_;
++  tmp.size_ = 0;
++  tmp.Reset(c, vc);
++}
++
++void ThreadClock::FenceRelease(ClockCache *c, VClockCache *vc, SyncClock *dst) {
++  release(c, vc, dst);
++}
++
++void ThreadClock::FenceAcquire(ClockCache *c, VClockCache *vc, SyncClock *src) {
++  acquire(c, src);
++}
++
+ }  // namespace __tsan
+Index: rtl/tsan_clock.h
+===================================================================
+--- rtl/tsan_clock.h	(revision 272794)
++++ rtl/tsan_clock.h	(working copy)
+@@ -40,12 +40,44 @@
+ typedef DenseSlabAlloc<ClockBlock, 1<<16, 1<<10> ClockAlloc;
+ typedef DenseSlabAllocCache ClockCache;
+ 
++// Vector of Vector Clocks for the RMW release sequence tracking.
++// When a new thread performs a RMW with release, add mapping from tid -> VC and
++// release the thread's clock to it.
++// When there is a non-RMW of any kind, collapse VVC to just the VC of the
++// performing thread, or empty everything.
++//
++// Associativity and mem management is difficult, so handle everything linearly
++// for now.
++//
++// ThreadClock will handle it, so the SyncClock will have the VVC inside it.
++struct VClockBlock {
++  static const int kNumElems = 80;  // Limit VVC to 10 for now.
++
++  VClockBlock() {}
++  ~VClockBlock() {}
++
++  u32 clocks_[kNumElems];
++  unsigned tids_[kNumElems];
++  u32 sizes_[kNumElems];
++  unsigned last_free_idx_;
++};
++
++typedef DenseSlabAlloc<VClockBlock, 1<<16, 1<<10> VClockAlloc;
++typedef DenseSlabAllocCache VClockCache;
++
+ // The clock that lives in sync variables (mutexes, atomics, etc).
++// TODO: Shallow version for just the tab, allowing us to save space.
++//       (no VVC, just a tab).
+ class SyncClock {
+  public:
+   SyncClock();
+   ~SyncClock();
+ 
++  // Copies the current state of the clock into dest. Ignores the VVC.
++  void CopyClock(ClockCache *c, VClockCache *vc, SyncClock *dst) const;
++  // Joins the clock in src with this, becoming the piecewise maximum.
++  void JoinClock(ClockCache *c, SyncClock *src);
++
+   uptr size() const {
+     return size_;
+   }
+@@ -55,7 +87,7 @@
+   }
+ 
+   void Resize(ClockCache *c, uptr nclk);
+-  void Reset(ClockCache *c);
++  void Reset(ClockCache *c, VClockCache *vc);
+ 
+   void DebugDump(int(*printf)(const char *s, ...));
+ 
+@@ -74,6 +106,11 @@
+   u32 tab_idx_;
+   u32 size_;
+ 
++  // For RMWs. if multiple RSs are created, use the VCC.
++  VClockBlock *vclock_;
++  u32 vclock_idx_;
++  bool vvc_in_use_;
++
+   ClockElem &elem(unsigned tid) const;
+ };
+ 
+@@ -105,10 +142,17 @@
+   }
+ 
+   void acquire(ClockCache *c, const SyncClock *src);
+-  void release(ClockCache *c, SyncClock *dst) const;
+-  void acq_rel(ClockCache *c, SyncClock *dst);
+-  void ReleaseStore(ClockCache *c, SyncClock *dst) const;
++  void release(ClockCache *c, VClockCache *vc, SyncClock *dst) const;
++  void acq_rel(ClockCache *c, VClockCache *vc, SyncClock *dst);
++  void ReleaseStore(ClockCache *c, VClockCache *vc, SyncClock *dst) const;
+ 
++  // Extras for RS support, we let thread clock code handle it.
++  void NonReleaseStore(ClockCache *c, VClockCache *vc, SyncClock *dst, SyncClock *Frel_clock) const;
++  void NonReleaseStore2(ClockCache *c, VClockCache *vc, SyncClock *dst, SyncClock *Frel_clock) const;  // Merge with 1.
++  void RMW(ClockCache *c, VClockCache *vc, SyncClock *dst, bool is_acquire, bool is_release, SyncClock *Facq_clock, SyncClock *Frel_clock);
++  void FenceRelease(ClockCache *c, VClockCache *vc, SyncClock *dst);
++  void FenceAcquire(ClockCache *c, VClockCache *vc, SyncClock *src);
++
+   void DebugReset();
+   void DebugDump(int(*printf)(const char *s, ...));
+ 
+Index: rtl/tsan_defs.h
+===================================================================
+--- rtl/tsan_defs.h	(revision 272794)
++++ rtl/tsan_defs.h	(working copy)
+@@ -25,7 +25,7 @@
+ #endif
+ 
+ #ifndef TSAN_COLLECT_STATS
+-# define TSAN_COLLECT_STATS 0
++# define TSAN_COLLECT_STATS 0//1
+ #endif
+ 
+ #ifndef TSAN_CONTAINS_UBSAN
+Index: rtl/tsan_interceptors.cc
+===================================================================
+--- rtl/tsan_interceptors.cc	(revision 272794)
++++ rtl/tsan_interceptors.cc	(working copy)
+@@ -887,6 +887,8 @@
+     Processor *proc = ProcCreate();
+     ProcWire(proc, thr);
+     ThreadStart(thr, tid, GetTid());
++    //atomic_store(&p->tid, 0, memory_order_release);
++    //ThreadStart(thr, tid, GetTid());
+     atomic_store(&p->tid, 0, memory_order_release);
+   }
+   void *res = callback(param);
+Index: rtl/tsan_interface.h
+===================================================================
+--- rtl/tsan_interface.h	(revision 272794)
++++ rtl/tsan_interface.h	(working copy)
+@@ -72,6 +72,9 @@
+ SANITIZER_INTERFACE_ATTRIBUTE void __tsan_func_entry(void *call_pc);
+ SANITIZER_INTERFACE_ATTRIBUTE void __tsan_func_exit();
+ 
++SANITIZER_INTERFACE_ATTRIBUTE void __tsan_debug_start();
++SANITIZER_INTERFACE_ATTRIBUTE void __tsan_debug_end();
++
+ SANITIZER_INTERFACE_ATTRIBUTE
+ void __tsan_read_range(void *addr, unsigned long size);  // NOLINT
+ SANITIZER_INTERFACE_ATTRIBUTE
+Index: rtl/tsan_interface_atomic.cc
+===================================================================
+--- rtl/tsan_interface_atomic.cc	(revision 272794)
++++ rtl/tsan_interface_atomic.cc	(working copy)
+@@ -25,6 +25,7 @@
+ #include "tsan_flags.h"
+ #include "tsan_interface.h"
+ #include "tsan_rtl.h"
++//#include "tsan_relaxed.h"
+ 
+ using namespace __tsan;  // NOLINT
+ 
+@@ -51,9 +52,9 @@
+       || mo == mo_acq_rel || mo == mo_seq_cst;
+ }
+ 
+-static bool IsAcqRelOrder(morder mo) {
+-  return mo == mo_acq_rel || mo == mo_seq_cst;
+-}
++//static bool IsAcqRelOrder(morder mo) {
++//  return mo == mo_acq_rel || mo == mo_seq_cst;
++//}
+ 
+ template<typename T> T func_xchg(volatile T *v, T op) {
+   T res = __sync_lock_test_and_set(v, op);
+@@ -223,18 +224,40 @@
+ static T AtomicLoad(ThreadState *thr, uptr pc, const volatile T *a,
+     morder mo) {
+   CHECK(IsLoadOrder(mo));
++  // Could potentially get the lock in read mode if relaxed load.
++  SyncVar *s = ctx->metamap.GetOrCreateAndLock(thr, pc, (uptr)a, true);
++  // Must acquire the SC lock for whole duration, before accessing buffer.
++  if (mo == mo_seq_cst) {
++    ctx->Smtx.Lock();
++    SCRead(thr, pc);
++  }
++  // Check the store buffer. 
++  u64 bits;
++  SyncClock *clock;
++  bool buffered =
++      s->store_buffer.FetchStore(thr, &bits, &clock, mo == mo_seq_cst, false);
++  // Get appropriate values depending on if we read from the buffer.
++  T val;
++  if (!buffered) {
++    val = NoTsanAtomicLoad(a, mo);
++    clock = &s->clock;
++  } else {
++    internal_memcpy(&val, &bits, sizeof(T));
++  }
+   // This fast-path is critical for performance.
+   // Assume the access is atomic.
+   if (!IsAcquireOrder(mo)) {
++    NonAcquireLoadImpl(thr, pc, clock);
++    s->mtx.Unlock();
+     MemoryReadAtomic(thr, pc, (uptr)a, SizeLog<T>());
+-    return NoTsanAtomicLoad(a, mo);
++    return val;
+   }
+-  SyncVar *s = ctx->metamap.GetOrCreateAndLock(thr, pc, (uptr)a, false);
+-  AcquireImpl(thr, pc, &s->clock);
+-  T v = NoTsanAtomicLoad(a, mo);
+-  s->mtx.ReadUnlock();
++  AcquireImpl(thr, pc, clock);
++  if (mo == mo_seq_cst)
++    ctx->Smtx.Unlock();
++  s->mtx.Unlock();
+   MemoryReadAtomic(thr, pc, (uptr)a, SizeLog<T>());
+-  return v;
++  return val;
+ }
+ 
+ template<typename T>
+@@ -254,21 +277,36 @@
+     morder mo) {
+   CHECK(IsStoreOrder(mo));
+   MemoryWriteAtomic(thr, pc, (uptr)a, SizeLog<T>());
++  // Start of critical section
++  __sync_synchronize();
++  SyncVar *s = ctx->metamap.GetOrCreateAndLock(thr, pc, (uptr)a, true);
++  // Increment epoch here, even if relaxed, to enforce CoWR.
++  // Can't increment epoch w/o writing to the trace as well.
++  thr->fast_state.IncrementEpoch();
++  TraceAddEvent(thr, thr->fast_state, EventTypeMop, 0);
++  // Acquire SC lock here for the whole function?
++  if (mo == mo_seq_cst) {
++    ctx->Smtx.Lock();
++    SCWrite(thr, pc);
++  }
++  // Cache the current state of the location in the store buffer.
++  T val = NoTsanAtomicLoad(a, mo);
++  u64 bits = 0;
++  internal_memcpy(&bits, &val, sizeof(T));
++  s->store_buffer.BufferStore(
++      thr, bits, &s->clock, mo == mo_seq_cst, IsReleaseOrder(mo));
+   // This fast-path is critical for performance.
+   // Assume the access is atomic.
+-  // Strictly saying even relaxed store cuts off release sequence,
+-  // so must reset the clock.
+   if (!IsReleaseOrder(mo)) {
++    NonReleaseStoreImpl(thr, pc, &s->clock);
+     NoTsanAtomicStore(a, v, mo);
++    s->mtx.Unlock();
+     return;
+   }
+-  __sync_synchronize();
+-  SyncVar *s = ctx->metamap.GetOrCreateAndLock(thr, pc, (uptr)a, true);
+-  thr->fast_state.IncrementEpoch();
+-  // Can't increment epoch w/o writing to the trace as well.
+-  TraceAddEvent(thr, thr->fast_state, EventTypeMop, 0);
+-  ReleaseImpl(thr, pc, &s->clock);
++  ReleaseStoreImpl(thr, pc, &s->clock);
+   NoTsanAtomicStore(a, v, mo);
++  if (mo == mo_seq_cst)
++    ctx->Smtx.Unlock();
+   s->mtx.Unlock();
+ }
+ 
+@@ -275,22 +313,31 @@
+ template<typename T, T (*F)(volatile T *v, T op)>
+ static T AtomicRMW(ThreadState *thr, uptr pc, volatile T *a, T v, morder mo) {
+   MemoryWriteAtomic(thr, pc, (uptr)a, SizeLog<T>());
+-  SyncVar *s = 0;
+-  if (mo != mo_relaxed) {
+-    s = ctx->metamap.GetOrCreateAndLock(thr, pc, (uptr)a, true);
+-    thr->fast_state.IncrementEpoch();
+-    // Can't increment epoch w/o writing to the trace as well.
+-    TraceAddEvent(thr, thr->fast_state, EventTypeMop, 0);
+-    if (IsAcqRelOrder(mo))
+-      AcquireReleaseImpl(thr, pc, &s->clock);
+-    else if (IsReleaseOrder(mo))
+-      ReleaseImpl(thr, pc, &s->clock);
+-    else if (IsAcquireOrder(mo))
+-      AcquireImpl(thr, pc, &s->clock);
++  // Start of critical section
++  __sync_synchronize();
++  SyncVar *s = ctx->metamap.GetOrCreateAndLock(thr, pc, (uptr)a, true);
++  // Increment epoch here, even if relaxed, to enforce CoWR.
++  // Can't increment epoch w/o writing to the trace as well.
++  thr->fast_state.IncrementEpoch();
++  TraceAddEvent(thr, thr->fast_state, EventTypeMop, 0);
++  // Treat as SC read and write.
++  if (mo == mo_seq_cst) {
++    ctx->Smtx.Lock();
++    SCRead(thr, pc);
++    SCWrite(thr, pc);
+   }
++  // RMW will always put the thread's pos in mo to the end. Done by BufferStore.
++  // Identical to AtomicStore.
++  T val = NoTsanAtomicLoad(a, mo);
++  u64 bits = 0;
++  internal_memcpy(&bits, &val, sizeof(T));
++  s->store_buffer.BufferStore(
++      thr, bits, &s->clock, mo == mo_seq_cst, IsReleaseOrder(mo));
++  RMWImpl(thr, pc, &s->clock, IsAcquireOrder(mo), IsReleaseOrder(mo));
+   v = F(a, v);
+-  if (s)
+-    s->mtx.Unlock();
++  if (mo == mo_seq_cst)
++    ctx->Smtx.Unlock();
++  s->mtx.Unlock();
+   return v;
+ }
+ 
+@@ -394,7 +441,7 @@
+   return c;
+ }
+ 
+-template<typename T>
++/*template<typename T>
+ static bool AtomicCAS(ThreadState *thr, uptr pc,
+     volatile T *a, T *c, T v, morder mo, morder fmo) {
+   (void)fmo;  // Unused because llvm does not pass it yet.
+@@ -425,6 +472,56 @@
+     return true;
+   *c = pr;
+   return false;
++}*/
++
++template<typename T>
++static bool AtomicCAS(ThreadState *thr, uptr pc,
++    volatile T *a, T *c, T v, morder mo, morder fmo) {
++  MemoryWriteAtomic(thr, pc, (uptr)a, SizeLog<T>());
++  // Start of critical section
++  __sync_synchronize();
++  SyncVar *s = ctx->metamap.GetOrCreateAndLock(thr, pc, (uptr)a, true);
++  // Increment epoch here, even if relaxed, to enforce CoWR.
++  // Can't increment epoch w/o writing to the trace as well.
++  thr->fast_state.IncrementEpoch();
++  TraceAddEvent(thr, thr->fast_state, EventTypeMop, 0);
++  // If the success order is SC, must acquire the lock in case we succeed.
++  if (mo == mo_seq_cst) {
++    ctx->Smtx.Lock();
++  }
++  // Prepare the previous value in case the CAS succeeds.
++  T val = func_cas(a, *c, v);
++  bool success = val == *c;
++  if (success) {
++    if (mo == mo_seq_cst) {
++      SCRead(thr, pc);
++      SCWrite(thr, pc);
++    }
++    // Store previous value only if successful.
++    u64 bits = 0;
++    internal_memcpy(&bits, &val, sizeof(T));
++    s->store_buffer.BufferStore(
++        thr, bits, &s->clock, mo == mo_seq_cst, IsReleaseOrder(mo));
++    // Don't bother if relaxed, unless some stats need updating.
++    if (mo != mo_relaxed) {
++      // Relaxed RMW should not affect the RS states.
++      RMWImpl(thr, pc, &s->clock, IsAcquireOrder(mo), IsReleaseOrder(mo));
++    }
++  } else {
++    if (fmo == mo_seq_cst) {
++      SCRead(thr, pc);
++    }
++    // Nothing is stored, but the mo pos of this thread moves to the end.
++    s->store_buffer.AdvanceToEnd(thr);
++    *c = val;
++    if (IsAcquireOrder(fmo)) {
++      AcquireImpl(thr, pc, &s->clock);
++    }
++  }
++  if (mo == mo_seq_cst)
++    ctx->Smtx.Unlock();
++  s->mtx.Unlock();
++  return success;
+ }
+ 
+ template<typename T>
+@@ -440,8 +537,26 @@
+ }
+ 
+ static void AtomicFence(ThreadState *thr, uptr pc, morder mo) {
+-  // FIXME(dvyukov): not implemented.
+   __sync_synchronize();
++  if (mo == mo_relaxed) {
++    return;
++  }
++  // Increment epoch to know when the fence occurred in the thread.
++  // Can't increment epoch w/o writing to the trace as well.
++  thr->fast_state.IncrementEpoch();
++  TraceAddEvent(thr, thr->fast_state, EventTypeMop, 0);  // Not really a mem op.
++  // Needed for CoRR in the store buffer.
++  if (IsReleaseOrder(mo))
++    thr->last_release = thr->fast_state.epoch();
++  // SC fence
++  if (mo == mo_seq_cst) {
++    ctx->Smtx.Lock();
++    SCFence(thr, pc);
++  }
++  // Acquire and release, let the VC code handle it.
++  FenceImpl(thr, pc, IsLoadOrder(mo), IsReleaseOrder(mo));
++  if (mo == mo_seq_cst)
++    ctx->Smtx.Unlock();
+ }
+ #endif
+ 
+@@ -457,7 +572,7 @@
+     ThreadState *const thr = cur_thread(); \
+     if (thr->ignore_interceptors) \
+       return NoTsanAtomic##func(__VA_ARGS__); \
+-    AtomicStatInc(thr, sizeof(*a), mo, StatAtomic##func); \
++    AtomicStatInc(thr, sizeof(*a), mo, StatAtomic##func, (StatType)(StatAtomic##func##Relaxed + mo)); \
+     ScopedAtomic sa(thr, callpc, a, mo, __func__); \
+     return Atomic##func(thr, pc, __VA_ARGS__); \
+ /**/
+@@ -473,12 +588,15 @@
+   ~ScopedAtomic() {
+     ProcessPendingSignals(thr_);
+     FuncExit(thr_);
++    // Scheduling strategy here!
++    //internal_sched_yield();  // random
++    // End scheduling strategy
+   }
+  private:
+   ThreadState *thr_;
+ };
+ 
+-static void AtomicStatInc(ThreadState *thr, uptr size, morder mo, StatType t) {
++static void AtomicStatInc(ThreadState *thr, uptr size, morder mo, StatType t, StatType tmo) {
+   StatInc(thr, StatAtomic);
+   StatInc(thr, t);
+   StatInc(thr, size == 1 ? StatAtomic1
+@@ -492,6 +610,7 @@
+              : mo == mo_release ? StatAtomicRelease
+              : mo == mo_acq_rel ? StatAtomicAcq_Rel
+              :                    StatAtomicSeq_Cst);
++  StatInc(thr, tmo);
+ }
+ 
+ extern "C" {
+Index: rtl/tsan_interface_inl.h
+===================================================================
+--- rtl/tsan_interface_inl.h	(revision 272794)
++++ rtl/tsan_interface_inl.h	(working copy)
+@@ -108,6 +108,14 @@
+   FuncExit(cur_thread());
+ }
+ 
++void __tsan_debug_start() {
++  cur_thread()->in_debug = true;
++}
++
++void __tsan_debug_end() {
++  cur_thread()->in_debug = false;
++}
++
+ void __tsan_read_range(void *addr, uptr size) {
+   MemoryAccessRange(cur_thread(), CALLERPC, (uptr)addr, size, false);
+ }
+Index: rtl/tsan_mutex.cc
+===================================================================
+--- rtl/tsan_mutex.cc	(revision 272794)
++++ rtl/tsan_mutex.cc	(working copy)
+@@ -44,6 +44,7 @@
+   /*12 MutexTypeFired*/       {MutexTypeLeaf},
+   /*13 MutexTypeRacy*/        {MutexTypeLeaf},
+   /*14 MutexTypeGlobalProc*/  {},
++  /*15 MutexTypeSC*/          {},
+ };
+ 
+ static bool CanLockAdj[MutexTypeCount][MutexTypeCount];
+Index: rtl/tsan_mutex.h
+===================================================================
+--- rtl/tsan_mutex.h	(revision 272794)
++++ rtl/tsan_mutex.h	(working copy)
+@@ -35,6 +35,7 @@
+   MutexTypeFired,
+   MutexTypeRacy,
+   MutexTypeGlobalProc,
++  MutexTypeSC,
+ 
+   // This must be the last.
+   MutexTypeCount
+Index: rtl/tsan_platform.h
+===================================================================
+--- rtl/tsan_platform.h	(revision 272794)
++++ rtl/tsan_platform.h	(working copy)
+@@ -244,9 +244,31 @@
+   static const uptr kVdsoBeg       = 0x7800000000000000ull;
+ };
+ 
++//<<<<<<< .mine
++// Fits all user memory into the shadow memory space.
++//
++// Module and stack memory is 7e80 0000 0000 - 7fff ffff ffff
++//   7e80 0000 0000 - 7eff ffff ffff maps to 0200 0000 0000 - 03ff ffff ffff
++//   7f00 0000 0000 - 7fff ffff ffff maps to 0400 0000 0000 - 07ff ffff ffff
++//
++// Static memory is 0000 0000 1000 - 0100 0000 0000
++//   which maps to 0800 0000 4000 - 0bff ffff ffff
++//
++// Heap memory is 7d00 0000 0000 - 7dff ffff ffff
++//   which maps to 0c00 0000 0000 - 0fff ffff ffff
++//
++// Shadow memory region 0800 0000 0000 - 0800 0000 3fff is unused.
++//ALWAYS_INLINE
++//uptr MemToShadow(uptr x) {
++//  DCHECK(IsAppMem(x));
++//  return (((x) & ~(kAppMemMsk | (kShadowCell - 1)))
++//      ^ kAppMemXor) * kShadowCnt;
++//}
++//=======
+ // Indicates the runtime will define the memory regions at runtime.
+ #define TSAN_RUNTIME_VMA 1
+ #endif
++//>>>>>>> .r272794
+ 
+ #elif defined(SANITIZER_GO) && !SANITIZER_WINDOWS
+ 
+Index: rtl/tsan_relaxed.cc
+===================================================================
+--- rtl/tsan_relaxed.cc	(revision 0)
++++ rtl/tsan_relaxed.cc	(working copy)
+@@ -0,0 +1,341 @@
++// TODO Do not commit load when a release has happened until the load reads later
++//      in mo.
++// TODO Put latest store in buffer instead of treating it specially.
++
++#include "tsan_relaxed.h"
++
++#include "tsan_clock.h"
++#include "tsan_rtl.h"
++#include "sanitizer_common/sanitizer_placement_new.h"
++
++namespace __tsan {
++
++// Fetch the value in the tsc register (x86).
++// Can be used as a random value (for the lower bits).
++static inline u64 rdtsc() {
++  u64 ret;
++  asm volatile ("rdtsc; "          // read of tsc
++                "shl $32,%%rdx; "  // shift higher 32 bits stored in rdx up
++                "or %%rdx,%%rax"   // and or onto rax
++                : "=a"(ret)        // output to tsc
++                :
++                : "%rcx", "%rdx", "memory"); // rcx and rdx are clobbered
++                                             // memory to prevent reordering
++  return ret;
++}
++
++StoreBuffer::StoreBuffer() {
++  Reset(0);
++}
++
++void StoreBuffer::Reset(Processor *proc) {
++  last_pos_ = 0;
++  size_ = 0;
++  prev_tid_ = 0;
++  prev_is_sc_access_ = false;
++  prev_epoch_ = 0;
++  //internal_memset(pos_, 0, sizeof(*pos_));
++  //internal_memset(loads_, 0, sizeof(*loads_));
++  internal_memset(pos_, 0, sizeof(pos_));
++  internal_memset(loads_, 0, sizeof(loads_));
++  if (proc == 0) {
++    CHECK_EQ(stores_, 0);
++    CHECK_EQ(stores_back_, 0);
++    CHECK_EQ(prev_loads_, 0);
++    return;
++  }
++  StoreElem *current = stores_;
++  while (current != 0) {
++    LoadElem *load = current->loads_;
++    while (load != 0) {
++      LoadElem *next = load->next_;
++      ctx->load_alloc.Free(&proc->load_cache, load->id_);
++      load = next;
++    }
++    StoreElem *next = current->next_;
++    current->clock_.Reset(&proc->clock_cache, 0);
++    ctx->store_alloc.Free(&proc->store_cache, current->id_);
++    current = next;
++  }
++  stores_ = 0;
++  stores_back_ = 0;
++  LoadElem *load = prev_loads_;
++  while (load != 0) {
++    LoadElem *next = load->next_;
++    ctx->load_alloc.Free(&proc->load_cache, load->id_);
++    load = next;
++  }
++  prev_loads_ = 0;
++}
++
++void StoreBuffer::RemoveLoadFromList(LoadElem *load) {
++  if (load->next_ != 0)
++    load->next_->prev_ = load->prev_;
++  if (load->prev_ != 0) {
++    load->prev_->next_ = load->next_;
++  } else {
++    if (load->store_ != 0) {
++      load->store_->loads_ = load->next_;
++    } else {
++      prev_loads_ = load->next_;
++    }
++  }
++}
++
++void StoreBuffer::AddLoadToList(LoadElem *load, StoreElem *store) {
++  load->store_ = store;
++  load->prev_ = 0;
++  if (store != 0) {
++    load->next_ = store->loads_;
++    store->loads_ = load;
++  } else {
++    load->next_ = prev_loads_;
++    prev_loads_ = load;
++  }
++  if (load->next_ != 0)
++    load->next_->prev_ = load;
++}
++
++void StoreBuffer::BufferStore(ThreadState *thr, u64 bits, SyncClock *clock,
++                              bool is_sc_access, bool is_release) {
++  StoreElem *elem = 0;
++  if (!stores_) {
++    StatInc(thr, StatUniqueStore);
++  }
++  // Cap the buffer size, otherwise it will grow very large.
++  if (stores_ && last_pos_ - stores_->pos_ > kBuffMaxSize) {
++    // Remove elem from the front, free clock and loads.
++    StatInc(thr, StatStoreElemFall);
++    elem = stores_;
++    stores_ = stores_->next_;
++    if (stores_ != 0)
++      stores_->prev_ = 0;
++    for (LoadElem *load = elem->loads_; load != 0;) {
++      StatInc(thr, StatLoadElemFall);
++      if (loads_[load->tid_] == load)
++        loads_[load->tid_] = 0;
++      LoadElem *next = load->next_;
++      ctx->load_alloc.Free(&thr->proc()->load_cache, load->id_);
++      load = next;
++    }
++    elem->clock_.Reset(&thr->proc()->clock_cache, 0);
++  } else {
++    // Otherwise, allocate new elem.
++    StatInc(thr, StatStoreElemCreate);
++    u32 id = ctx->store_alloc.Alloc(&thr->proc()->store_cache);
++    elem = ctx->store_alloc.Map(id);
++    elem->id_ = id;
++  }
++
++  // Set up the StoreElem for the previous store.
++  elem->pos_ = ++last_pos_;
++  elem->epoch_ = prev_epoch_;
++  clock->CopyClock(
++      &thr->proc()->clock_cache, &thr->proc()->vclock_cache, &elem->clock_);
++  elem->tid_ = prev_tid_;
++  elem->is_sc_access_ = prev_is_sc_access_;
++  elem->value_ = bits;
++  elem->loads_ = prev_loads_;
++  for (LoadElem *load = prev_loads_; load != 0; load = load->next_)
++    load->store_ = elem;
++  if (stores_ == 0) {
++    stores_ = elem;
++    elem->prev_ = 0;
++  } else {
++    stores_back_->next_ = elem;
++    elem->prev_ = stores_back_;
++  }
++  stores_back_ = elem;
++  elem->next_ = 0;
++  // Threads pos in mo is now the front. This assumes the thread is about to
++  // perform a store.
++  pos_[thr->tid] = last_pos_ + 1;
++  // Store this thread's info for the next buffer store.
++  prev_epoch_ = thr->fast_state.epoch();
++  prev_is_sc_access_ = is_sc_access;
++  prev_tid_ = thr->tid;
++  prev_loads_ = 0;
++
++  // For SC stores, very inefficient, but no better solution right now.
++  // Mark every store that happens before this as SC, when fetch store is called
++  // for SC read, it will skip over these.
++  if (is_sc_access)
++    for (StoreElem *current = stores_back_; current != 0; current = current->prev_) {
++      if (thr->clock.get(current->tid_) >= current->epoch_)
++        current->is_sc_access_ = true;
++    }
++
++  // If there was a release by tid on some other var, commit immediately.
++  if (loads_[thr->tid] && thr->last_release > loads_[thr->tid]->epoch_)
++    loads_[thr->tid] = 0;
++  // Signal all other vars to commit the load for this thread.
++  if (is_release)
++    thr->last_release = thr->fast_state.epoch();
++  // No load needs to be stored, as if another thread synchronises on a later
++  // store through another var, the acquiring thread's VC for this thread will
++  // be later than the current epoch.
++  if (loads_[thr->tid] != 0) {
++    StatInc(thr, StatLoadElemDelete);
++    LoadElem *load = loads_[thr->tid];
++    RemoveLoadFromList(load);
++    ctx->load_alloc.Free(&thr->proc()->load_cache, load->id_);
++    loads_[thr->tid] = 0;
++  }
++}
++
++bool StoreBuffer::FetchStore(ThreadState *thr, u64 *val, SyncClock **clock,
++                             bool is_sc_access, bool is_release) {
++  if (stores_ == 0)
++    return false;
++
++  // If current active load at the end, break out early.
++  if (loads_[thr->tid] && loads_[thr->tid]->store_ == 0) {
++    CHECK_EQ(pos_[thr->tid], last_pos_ + 1);
++    return false;
++  }
++  // If there was a release by tid on some other var, commit immediately.
++  if (loads_[thr->tid] && thr->last_release > loads_[thr->tid]->epoch_)
++    loads_[thr->tid] = 0;
++  // Set up a load to be attached to a store. This will either be removed from
++  // the current active, or newly created.
++  LoadElem *load = loads_[thr->tid];
++  if (load == 0) {
++    StatInc(thr, StatLoadElemCreate);
++    u32 id = ctx->load_alloc.Alloc(&thr->proc()->load_cache);
++    load = ctx->load_alloc.Map(id);
++    load->id_ = id;
++    load->tid_ = thr->tid;
++    loads_[thr->tid] = load;
++  } else {
++    StatInc(thr, StatLoadElemMove);
++    RemoveLoadFromList(load);
++  }
++  load->epoch_ = thr->fast_state.epoch();
++
++  // If the latest write in mo happens before this, or SC fences only allow the
++  // last write to be read, then set pos to end.
++  if (thr->clock.get(prev_tid_) >= prev_epoch_ ||
++      // Duplicate SC fence cases from the loop.
++      (thr->Slimit.size() > prev_tid_ &&
++          thr->Slimit.get(prev_tid_) >= prev_epoch_) ||
++      (thr->Swrite.size() > prev_tid_ && prev_is_sc_access_ &&
++          thr->Swrite.get(prev_tid_) >= prev_epoch_) ||
++      (thr->Sread.size() > prev_tid_ && is_sc_access &&
++          thr->Sread.get(prev_tid_) >= prev_epoch_)) {
++    pos_[thr->tid] = last_pos_ + 1;
++    AddLoadToList(load, 0);
++    return false;
++  }
++  // If there is a load on the end of mo that has happens before this, set pos
++  // to end.
++  for (LoadElem *cur = prev_loads_; cur != 0; cur = cur->next_)
++    if (thr->clock.get(cur->tid_) > cur->epoch_) {
++      pos_[thr->tid] = last_pos_ + 1;
++      AddLoadToList(load, 0);
++      return false;
++    }
++
++  // Used if this is an SC write. Must identify last SC write and not read from
++  // any other SC write. If the end is SC, use magic pointer but never deref.
++  StoreElem *last_sc_store = 0;
++  if (prev_is_sc_access_)
++    last_sc_store = (StoreElem *)0x1;
++
++  // Search backwards in mo for the earliest possible write to read from.
++  StoreElem *limit = 0;
++  for (StoreElem *current = stores_back_; current != 0; current = current->prev_) {
++    // If the position in mo is earlier then this tid's pos, then we reached the
++    // limit previously.
++    if (pos_[thr->tid] > current->pos_)
++      break;
++    // Set last SC write if not yet found.
++    if (last_sc_store == 0 && current->is_sc_access_)
++      last_sc_store = current;
++    // If the VC epoch for the storing thread shows the store has happened
++    // before, then this is as far back as coherence of write-read allows.
++    if (thr->clock.get(current->tid_) >= current->epoch_) {
++      limit = current;
++      break;
++    }
++    // If there is a hard limit caused by 2 SC fences.
++    // If this is an SC store and this thread since did an SC fence.
++    // If storing thread followed with an SC fence and this is an SC read.
++    if ((thr->Slimit.size() > current->tid_ &&
++            thr->Slimit.get(current->tid_) >= current->epoch_) ||
++        (thr->Swrite.size() > current->tid_ && current->is_sc_access_ &&
++            thr->Swrite.get(current->tid_) >= current->epoch_) ||
++        (thr->Sread.size() > current->tid_ && is_sc_access &&
++            thr->Sread.get(current->tid_) >= current->epoch_)) {
++      limit = current;
++      break;
++    }
++    // Search through the load buffer attached to this store for a load that has
++    // happened before this load.
++    LoadElem *load = 0;
++    for (LoadElem *cur = current->loads_; cur != 0; cur = cur->next_)
++      if (thr->clock.get(cur->tid_) > cur->epoch_) {
++        load = cur;
++        break;
++      }
++    if (load != 0) {
++      limit = current;
++      break;
++    }
++    // Nothing found, but set the limit in case this is the limit, but only
++    // found on next iteration, or the end is reached.
++    limit = current;
++  }
++
++  // limit points to the earliest store tis can read, or 0, if it cannot read
++  // from the buffer.
++  // Any adversarial memory strategy should go here.
++  // For now, just read the earliest (+0 with 50% prob, +1 with 25%, ...).
++  while (limit != 0 &&
++         ((is_sc_access && limit->is_sc_access_ && limit != last_sc_store) ||
++         (rdtsc() & 4)))
++    limit = limit->next_;
++  if (limit == 0) {
++    pos_[thr->tid] = last_pos_ + 1;
++    AddLoadToList(load, 0);
++    return false;
++  }
++  *val = limit->value_;
++  *clock = &limit->clock_;
++  pos_[thr->tid] = limit->pos_;
++  AddLoadToList(load, limit);
++  return true;
++}
++
++void StoreBuffer::AdvanceToEnd(ThreadState *thr) {
++  pos_[thr->tid] = last_pos_ + 1;
++  // Must move active load to the end, or create new load at end.
++  // Quick exit if load already at the end.
++  LoadElem *load = loads_[thr->tid];
++  if (load != 0 && load->store_ == 0)
++    return;
++  // If there was a release by tid on some other var, commit immediately.
++  if (load != 0 && thr->last_release > load->epoch_) {
++    loads_[thr->tid] = 0;
++    load = 0;
++  }
++  // Take current active or create new one.
++  if (load == 0) {
++    StatInc(thr, StatLoadElemCreate);
++    u32 id = ctx->load_alloc.Alloc(&thr->proc()->load_cache);
++    load = ctx->load_alloc.Map(id);
++    load->id_ = id;
++    load->tid_ = thr->tid;
++    loads_[thr->tid] = load;
++  } else {
++    StatInc(thr, StatLoadElemMove);
++    RemoveLoadFromList(load);
++  }
++  load->epoch_ = thr->fast_state.epoch();
++  AddLoadToList(load, 0);
++}
++
++void StoreBuffer::FlushStores(ThreadState *thr) {
++
++}
++
++}  // namespace __tsan
+Index: rtl/tsan_relaxed.h
+===================================================================
+--- rtl/tsan_relaxed.h	(revision 0)
++++ rtl/tsan_relaxed.h	(working copy)
+@@ -0,0 +1,136 @@
++#ifndef TSAN_RELAXED_H_
++#define TSAN_RELAXED_H_
++
++#include "tsan_clock.h"
++#include "tsan_defs.h"
++#include "tsan_dense_alloc.h"
++
++namespace __tsan {
++
++// To be able to properly abide CoRR, certain loads must be buffered (the
++// alternative being to have a registry of SyncVars and updating on sync).
++//
++// Loads will be attached to individual stores in the store buffer, signifying
++// that the thread read the value at the given epoch. The store buffer will have
++// a list of actively updating loads for each tid.
++//
++// Notes:
++// - Two loads by the same thread without a release store inbetween do not need
++//   to be stored separately, as no other thread can possibly be constrained by
++//   the first load.
++// - The latest loads by a thread are still attached to the store elems, as
++//   although no thread can be constrained by them at that point, when a release
++//   store is performed, we may not get a chance to update it before another
++//   thread tries to load.
++// - It is safe to delete loads that are attached to a store being flushed.
++// - A load does not need to be created when a store occurs (indicating that we
++//   'read' the value we just stored) as the VC algorithm will ensure
++//   consistency.
++//
++// With these in mind, we can say the following about how to handle the loads:
++// - A load must be comitted when the last release performed by tid happens
++//   after the load: if (thr->last_release > load->epoch_).
++// - A store of any kind allows us to ditch the load, as the constraint imposed
++//   will be picked up by the epoch within the StoreElem.
++// - It is possible that a store can have multiple loads from the same tid
++//   attached to it. The second load is redundant, as if the second load
++//   constrains a thread, the first load will.
++// - To help reduce the amount of loads, if there is a load at the end of mo
++//   that must be comitted, it can instead be 'frozen', it will not be updated
++//   or comitted until another store occurs, whereby it will be comitted.
++struct StoreElem;
++struct LoadElem {
++  // Linked list, this creates quite an overhead, but is required.
++  LoadElem *next_;
++  LoadElem *prev_;
++  StoreElem *store_;
++  // Alloc id, for memory management.
++  u32 id_;
++  // tid and epoch pair.
++  unsigned tid_;
++  u64 epoch_;
++};
++
++typedef DenseSlabAlloc<LoadElem, 1<<16, 1<<10> LoadAlloc;
++typedef DenseSlabAllocCache LoadCache;
++
++// A single store performed by some thread.
++struct StoreElem {
++  // Linked list. Could use circular buffer instead.
++  StoreElem *next_;
++  StoreElem *prev_;
++  // Alloc id, for memory management.
++  u32 id_;
++  // Position in modification order.
++  u32 pos_;
++  // Clock elem of tid_ when store was performed.
++  u64 epoch_;
++  // VC to acquire if acquire loads this value. TODO: Avoid SyncClock.
++  SyncClock clock_;
++  // Store params.
++  unsigned tid_;
++  bool is_sc_access_;
++  u64 value_;  // Not templated, as this would affect too much.
++  // Attached loads.
++  LoadElem *loads_;
++};
++
++typedef DenseSlabAlloc<StoreElem, 1<<16, 1<<10> StoreAlloc;
++typedef DenseSlabAllocCache StoreCache;
++
++struct StoreBuffer {
++  StoreBuffer();
++  // Should be called before use to clear any prevous state.
++  void Reset(Processor *proc);
++
++  // Add and remove loads from load lists.
++  // Passing store as 0 will add the load to the list at the end of mo.
++  void RemoveLoadFromList(LoadElem *load);
++  void AddLoadToList(LoadElem *load, StoreElem *store);
++
++  // Push current state of the location (before the store) into the buffer.
++  // This should be called by store functions before any update is performed.
++  // is_sc_access indicates if the store about to be performed is sequentially
++  // consistent, NOT the store about to be put in the buffer.
++  void BufferStore(ThreadState *thr, u64 bits, SyncClock *clock,
++                   bool is_sc_access, bool is_release);
++
++  // Fetch value from store. Return false if no value is returned.
++  bool FetchStore(ThreadState *thr, u64 *val, SyncClock **clock,
++                  bool is_sc_access, bool is_release);
++
++  // Sets thr's position in mo to the end.
++  void AdvanceToEnd(ThreadState *thr);
++
++  // Remove unnecessary stores from the back of the buffer.
++  void FlushStores(ThreadState *thr);
++
++  // Linked list of ordered stores.
++  static const int kBuffMaxSize = 128;
++  StoreElem *stores_;
++  StoreElem *stores_back_;
++
++  // Coherence.
++  // Vector Position (VP) of current mo position for each thread.
++  // Temporary static vector, until a proper VP is made;
++  static const int kVPSize = 80;
++  u32 pos_[kVPSize];
++  u32 last_pos_;
++  u32 size_;  // unused
++
++  // Coherence.
++  // Track the last store that has not yet been comitted.
++  LoadElem *loads_[kVPSize];
++
++  // Hack. Store info for the last load, when it is put into the buffer, it
++  // won't be available.
++  // TODO properly set on initialisation.
++  unsigned prev_tid_;
++  bool prev_is_sc_access_;
++  u64 prev_epoch_;
++  LoadElem *prev_loads_;
++};
++
++}  // namespace __tsan
++
++#endif  // TSAN_RELAXED_H_
+Index: rtl/tsan_rtl.cc
+===================================================================
+--- rtl/tsan_rtl.cc	(revision 272794)
++++ rtl/tsan_rtl.cc	(working copy)
+@@ -103,7 +103,10 @@
+   , racy_stacks(MBlockRacyStacks)
+   , racy_addresses(MBlockRacyAddresses)
+   , fired_suppressions_mtx(MutexTypeFired, StatMtxFired)
+-  , fired_suppressions(8) {
++  , fired_suppressions(8)
++  , Smtx(MutexTypeSC, StatMtxSC)
++  , Sfence(0)
++  , Swrite(0) {
+ }
+ 
+ // The objects are allocated in TLS, so one may rely on zero-initialization.
+Index: rtl/tsan_rtl.h
+===================================================================
+--- rtl/tsan_rtl.h	(revision 272794)
++++ rtl/tsan_rtl.h	(working copy)
+@@ -168,6 +168,7 @@
+ // Shadow (from most significant bit):
+ //   freed           : 1
+ //   tid             : kTidBits
++//   unused          : 1 ?
+ //   is_atomic       : 1
+ //   is_read         : 1
+ //   size_log        : 2
+@@ -342,6 +343,9 @@
+   DenseSlabAllocCache block_cache;
+   DenseSlabAllocCache sync_cache;
+   DenseSlabAllocCache clock_cache;
++  DenseSlabAllocCache vclock_cache;
++  DenseSlabAllocCache store_cache;
++  DenseSlabAllocCache load_cache;
+   DDPhysicalThread *dd_pt;
+ };
+ 
+@@ -410,6 +414,18 @@
+   const uptr tls_size;
+   ThreadContext *tctx;
+ 
++  // Is Printf turned on.
++  bool in_debug;
++  // Last release store.
++  u64 last_release;
++  // Acquire and release fence clocks.
++  SyncClock Frel_clock;
++  SyncClock Facq_clock;
++  // SC limit clock.
++  SyncClock Slimit;  // Hard limit on all accesses.
++  SyncClock Swrite;  // Limit on reading from SC writes.
++  SyncClock Sread;   // Limit only for SC reads.
++
+ #if SANITIZER_DEBUG && !SANITIZER_GO
+   InternalDeadlockDetector internal_deadlock_detector;
+ #endif
+@@ -528,7 +544,20 @@
+   InternalMmapVector<FiredSuppression> fired_suppressions;
+   DDetector *dd;
+ 
++  // For SC fences, along with Slimit per thread.
++  // A thread will usually only update its own index, in which case only a read
++  // lock is required, but if it needs to acquire a whole clock or resize, then
++  // a write lock should be held.
++  Mutex Smtx;
++  //SyncClock Sfence;
++  //SyncClock Swrite;
++  ThreadClock Sfence;
++  ThreadClock Swrite;
++
+   ClockAlloc clock_alloc;
++  VClockAlloc vclock_alloc;
++  StoreAlloc store_alloc;
++  LoadAlloc load_alloc;
+ 
+   Flags flags;
+ 
+@@ -633,18 +662,20 @@
+ bool IsExpectedReport(uptr addr, uptr size);
+ void PrintMatchedBenignRaces();
+ 
+-#if defined(TSAN_DEBUG_OUTPUT) && TSAN_DEBUG_OUTPUT >= 1
+-# define DPrintf Printf
+-#else
+-# define DPrintf(...)
+-#endif
++//#if defined(TSAN_DEBUG_OUTPUT) && TSAN_DEBUG_OUTPUT >= 1
++# define DPrintf Printf_
++//#else
++//# define DPrintf(...)
++//#endif
+ 
+-#if defined(TSAN_DEBUG_OUTPUT) && TSAN_DEBUG_OUTPUT >= 2
+-# define DPrintf2 Printf
+-#else
+-# define DPrintf2(...)
+-#endif
++//#if defined(TSAN_DEBUG_OUTPUT) && TSAN_DEBUG_OUTPUT >= 2
++# define DPrintf2 Printf_
++//#else
++//# define DPrintf2(...)
++//#endif
+ 
++#define Printf_ if (cur_thread()->in_debug) Printf
++
+ u32 CurrentStackId(ThreadState *thr, uptr pc);
+ ReportStack *SymbolizeStackId(u32 stack_id);
+ void PrintCurrentStack(ThreadState *thr, uptr pc);
+@@ -748,6 +779,17 @@
+ void ReleaseImpl(ThreadState *thr, uptr pc, SyncClock *c);
+ void ReleaseStoreImpl(ThreadState *thr, uptr pc, SyncClock *c);
+ void AcquireReleaseImpl(ThreadState *thr, uptr pc, SyncClock *c);
++// Extra for RS.
++void NonReleaseStoreImpl(ThreadState *thr, uptr pc, SyncClock *c);
++void NonAcquireLoadImpl(ThreadState *thr, uptr pc, SyncClock *c);
++void RMWImpl(ThreadState *thr, uptr pc, SyncClock *c,
++             bool is_acquire, bool is_release);
++void FenceImpl(ThreadState *thr, uptr pc, bool is_acquire, bool is_release);
++// Extra for SC fence consistency.
++// SC mutex must be held.
++void SCFence(ThreadState *thr, uptr pc);
++void SCWrite(ThreadState *thr, uptr pc);
++void SCRead(ThreadState *thr, uptr pc);
+ 
+ // The hacky call uses custom calling convention and an assembly thunk.
+ // It is considerably faster that a normal call for the caller
+Index: rtl/tsan_rtl_mutex.cc
+===================================================================
+--- rtl/tsan_rtl_mutex.cc	(revision 272794)
++++ rtl/tsan_rtl_mutex.cc	(working copy)
+@@ -444,7 +444,7 @@
+     return;
+   thr->clock.set(thr->fast_state.epoch());
+   thr->fast_synch_epoch = thr->fast_state.epoch();
+-  thr->clock.release(&thr->proc()->clock_cache, c);
++  thr->clock.release(&thr->proc()->clock_cache, &thr->proc()->vclock_cache, c);
+   StatInc(thr, StatSyncRelease);
+ }
+ 
+@@ -453,7 +453,8 @@
+     return;
+   thr->clock.set(thr->fast_state.epoch());
+   thr->fast_synch_epoch = thr->fast_state.epoch();
+-  thr->clock.ReleaseStore(&thr->proc()->clock_cache, c);
++  thr->clock.ReleaseStore(
++      &thr->proc()->clock_cache, &thr->proc()->vclock_cache, c);
+   StatInc(thr, StatSyncRelease);
+ }
+ 
+@@ -462,11 +463,68 @@
+     return;
+   thr->clock.set(thr->fast_state.epoch());
+   thr->fast_synch_epoch = thr->fast_state.epoch();
+-  thr->clock.acq_rel(&thr->proc()->clock_cache, c);
++  thr->clock.acq_rel(&thr->proc()->clock_cache, &thr->proc()->vclock_cache, c);
+   StatInc(thr, StatSyncAcquire);
+   StatInc(thr, StatSyncRelease);
+ }
+ 
++void NonReleaseStoreImpl(ThreadState *thr, uptr pc, SyncClock *c) {
++  if (thr->ignore_sync)
++    return;
++  thr->clock.set(thr->fast_state.epoch());
++//  thr->fast_synch_epoch = thr->fast_state.epoch();
++  thr->clock.NonReleaseStore(&thr->proc()->clock_cache,
++                             &thr->proc()->vclock_cache, c, &thr->Frel_clock);
++  thr->clock.NonReleaseStore2(&thr->proc()->clock_cache,
++                              &thr->proc()->vclock_cache, c, &thr->Frel_clock);
++  // TODO stats
++}
++
++void NonAcquireLoadImpl(ThreadState *thr, uptr pc, SyncClock *c) {
++  thr->clock.set(thr->fast_state.epoch());
++  thr->Facq_clock.JoinClock(&thr->proc()->clock_cache, c);
++}
++
++void RMWImpl(ThreadState *thr, uptr pc, SyncClock *c,
++             bool is_acquire, bool is_release) {
++  if (thr->ignore_sync)
++    return;
++  thr->clock.set(thr->fast_state.epoch());
++  thr->fast_synch_epoch = thr->fast_state.epoch();
++  thr->clock.RMW(&thr->proc()->clock_cache, &thr->proc()->vclock_cache, c,
++                 is_acquire, is_release, &thr->Facq_clock, &thr->Frel_clock);
++  // TODO stats
++}
++
++void FenceImpl(ThreadState *thr, uptr pc, bool is_acquire, bool is_release) {
++  if (thr->ignore_sync)
++    return;
++  thr->clock.set(thr->fast_state.epoch());
++  thr->fast_synch_epoch = thr->fast_state.epoch();
++  if (is_release) {
++    thr->clock.FenceRelease(&thr->proc()->clock_cache, &thr->proc()->vclock_cache, &thr->Frel_clock);
++  }
++  if (is_acquire) {
++    thr->clock.FenceAcquire(&thr->proc()->clock_cache, &thr->proc()->vclock_cache, &thr->Facq_clock);
++  }
++}
++
++void SCFence(ThreadState *thr, uptr pc) {
++  thr->clock.set(thr->fast_state.epoch());
++  ctx->Sfence.set(thr->tid, thr->clock.get(thr->tid));
++  ctx->Sfence.release(&thr->proc()->clock_cache, &thr->proc()->vclock_cache, &thr->Slimit);
++  ctx->Swrite.release(&thr->proc()->clock_cache, &thr->proc()->vclock_cache, &thr->Swrite);
++}
++
++void SCWrite(ThreadState *thr, uptr pc) {
++  thr->clock.set(thr->fast_state.epoch());
++  ctx->Swrite.set(thr->tid, thr->clock.get(thr->tid));
++}
++
++void SCRead(ThreadState *thr, uptr pc) {
++  ctx->Sfence.release(&thr->proc()->clock_cache, &thr->proc()->vclock_cache, &thr->Sread);
++}
++
+ void ReportDeadlock(ThreadState *thr, uptr pc, DDReport *r) {
+   if (r == 0)
+     return;
+Index: rtl/tsan_rtl_proc.cc
+===================================================================
+--- rtl/tsan_rtl_proc.cc	(revision 272794)
++++ rtl/tsan_rtl_proc.cc	(working copy)
+@@ -37,6 +37,8 @@
+   AllocatorProcFinish(proc);
+ #endif
+   ctx->clock_alloc.FlushCache(&proc->clock_cache);
++  ctx->store_alloc.FlushCache(&proc->store_cache);
++  ctx->load_alloc.FlushCache(&proc->load_cache);
+   ctx->metamap.OnProcIdle(proc);
+   if (common_flags()->detect_deadlocks)
+      ctx->dd->DestroyPhysicalThread(proc->dd_pt);
+Index: rtl/tsan_rtl_thread.cc
+===================================================================
+--- rtl/tsan_rtl_thread.cc	(revision 272794)
++++ rtl/tsan_rtl_thread.cc	(working copy)
+@@ -42,7 +42,7 @@
+ void ThreadContext::OnJoined(void *arg) {
+   ThreadState *caller_thr = static_cast<ThreadState *>(arg);
+   AcquireImpl(caller_thr, 0, &sync);
+-  sync.Reset(&caller_thr->proc()->clock_cache);
++  sync.Reset(&caller_thr->proc()->clock_cache, &caller_thr->proc()->vclock_cache);
+ }
+ 
+ struct OnCreatedArgs {
+@@ -74,7 +74,7 @@
+ 
+ void ThreadContext::OnDetached(void *arg) {
+   ThreadState *thr1 = static_cast<ThreadState*>(arg);
+-  sync.Reset(&thr1->proc()->clock_cache);
++  sync.Reset(&thr1->proc()->clock_cache, &thr1->proc()->vclock_cache);
+ }
+ 
+ struct OnStartedArgs {
+@@ -116,7 +116,7 @@
+   thr->fast_synch_epoch = epoch0;
+   AcquireImpl(thr, 0, &sync);
+   StatInc(thr, StatSyncAcquire);
+-  sync.Reset(&thr->proc()->clock_cache);
++  sync.Reset(&thr->proc()->clock_cache, &thr->proc()->vclock_cache);
+   thr->is_inited = true;
+   DPrintf("#%d: ThreadStart epoch=%zu stk_addr=%zx stk_size=%zx "
+           "tls_addr=%zx tls_size=%zx\n",
+@@ -135,6 +135,13 @@
+ 
+   if (common_flags()->detect_deadlocks)
+     ctx->dd->DestroyLogicalThread(thr->dd_lt);
++
++  thr->Frel_clock.Reset(&thr->proc()->clock_cache, &thr->proc()->vclock_cache);
++  thr->Facq_clock.Reset(&thr->proc()->clock_cache, &thr->proc()->vclock_cache);
++  thr->Slimit.Reset(&thr->proc()->clock_cache, &thr->proc()->vclock_cache);
++  thr->Swrite.Reset(&thr->proc()->clock_cache, &thr->proc()->vclock_cache);
++  thr->Sread.Reset(&thr->proc()->clock_cache, &thr->proc()->vclock_cache);
++
+   thr->~ThreadState();
+ #if TSAN_COLLECT_STATS
+   StatAggregate(ctx->stat, thr->stat);
+Index: rtl/tsan_stat.cc
+===================================================================
+--- rtl/tsan_stat.cc	(revision 272794)
++++ rtl/tsan_stat.cc	(working copy)
+@@ -22,6 +22,14 @@
+     dst[i] += src[i];
+ }
+ 
++#define STATCROSS(t) \
++  name[StatAtomic##t##Relaxed]                = "  "#t" with relaxed             "; \
++  name[StatAtomic##t##Consume]                = "  "#t" with consume             "; \
++  name[StatAtomic##t##Acquire]                = "  "#t" with acquire             "; \
++  name[StatAtomic##t##Release]                = "  "#t" with release             "; \
++  name[StatAtomic##t##Acq_Rel]                = "  "#t" with acq_rel             "; \
++  name[StatAtomic##t##Seq_Cst]                = "  "#t" with seq_cst             "
++
+ void StatOutput(u64 *stat) {
+   stat[StatShadowNonZero] = stat[StatShadowProcessed] - stat[StatShadowZero];
+ 
+@@ -94,6 +102,21 @@
+   name[StatClockStoreTail]               = "  clear tail                      ";
+   name[StatClockAcquireRelease]          = "Clock acquire-release             ";
+ 
++  name[StatTsan11]                       = "tsan11 statictics                 ";
++  name[StatVVC]                          = "  VVC operations                  ";
++  name[StatInitVVC]                      = "      init                        ";
++  name[StatAddToVVC]                     = "      add                         ";
++  name[StatModifyVVC]                    = "      modify                      ";
++  name[StatCollapseVVC]                  = "      collapse                    ";
++  name[StatRelaxed]                      = "  Relaxed elements                ";
++  name[StatStoreElemCreate]              = "    Store elements created        ";
++  name[StatStoreElemFall]                = "    Store elements fall off back  ";
++  name[StatLoadElemCreate]               = "    Load elements created         ";
++  name[StatLoadElemMove]                 = "    Load elements moved           ";
++  name[StatLoadElemFall]                 = "    Load elements fall off back   ";
++  name[StatLoadElemDelete]               = "    Load elements deleted         ";
++  name[StatUniqueStore]                  = "    Unique locations stored to    ";
++
+   name[StatAtomic]                       = "Atomic operations                 ";
+   name[StatAtomicLoad]                   = "  Including load                  ";
+   name[StatAtomicStore]                  = "            store                 ";
+@@ -118,6 +141,18 @@
+   name[StatAtomic8]                      = "            size 8                ";
+   name[StatAtomic16]                     = "            size 16               ";
+ 
++  STATCROSS(Load);
++  STATCROSS(Store);
++  STATCROSS(Exchange);
++  STATCROSS(FetchAdd);
++  STATCROSS(FetchSub);
++  STATCROSS(FetchAnd);
++  STATCROSS(FetchOr);
++  STATCROSS(FetchXor);
++  STATCROSS(FetchNand);
++  STATCROSS(CAS);
++  STATCROSS(Fence);
++
+   name[StatAnnotation]                   = "Dynamic annotations               ";
+   name[StatAnnotateHappensBefore]        = "  HappensBefore                   ";
+   name[StatAnnotateHappensAfter]         = "  HappensAfter                    ";
+@@ -168,10 +203,12 @@
+   name[StatMtxFired]                     = "  FiredSuppressions               ";
+   name[StatMtxRacy]                      = "  RacyStacks                      ";
+   name[StatMtxFD]                        = "  FD                              ";
++  name[StatMtxSC]                        = "  SC                              ";
+   name[StatMtxGlobalProc]                = "  GlobalProc                      ";
+ 
+   Printf("Statistics:\n");
+   for (int i = 0; i < StatCnt; i++)
++  //for (int i = StatTsan11; i <= StatUniqueStore; i++)
+     Printf("%s: %16zu\n", name[i], (uptr)stat[i]);
+ }
+ 
+Index: rtl/tsan_stat.h
+===================================================================
+--- rtl/tsan_stat.h	(revision 272794)
++++ rtl/tsan_stat.h	(working copy)
+@@ -13,9 +13,17 @@
+ 
+ #ifndef TSAN_STAT_H
+ #define TSAN_STAT_H
+-
++//#define TSAN_COLLECT_STATS 1
+ namespace __tsan {
+ 
++#define STATCROSS(t) \
++  StatAtomic##t##Relaxed, \
++  StatAtomic##t##Consume, \
++  StatAtomic##t##Acquire, \
++  StatAtomic##t##Release, \
++  StatAtomic##t##Acq_Rel, \
++  StatAtomic##t##Seq_Cst
++
+ enum StatType {
+   // Memory access processing related stuff.
+   StatMop,
+@@ -96,6 +104,22 @@
+   // Clocks - acquire-release.
+   StatClockAcquireRelease,
+ 
++  // tsan11
++  StatTsan11,
++  StatVVC,
++  StatInitVVC,
++  StatAddToVVC,
++  StatModifyVVC,
++  StatCollapseVVC,
++  StatRelaxed,
++  StatStoreElemCreate,
++  StatStoreElemFall,
++  StatLoadElemCreate,
++  StatLoadElemMove,
++  StatLoadElemFall,
++  StatLoadElemDelete,
++  StatUniqueStore,
++
+   // Atomics.
+   StatAtomic,
+   StatAtomicLoad,
+@@ -121,6 +145,19 @@
+   StatAtomic8,
+   StatAtomic16,
+ 
++  // Atomic combinations.
++  STATCROSS(Load),
++  STATCROSS(Store),
++  STATCROSS(Exchange),
++  STATCROSS(FetchAdd),
++  STATCROSS(FetchSub),
++  STATCROSS(FetchAnd),
++  STATCROSS(FetchOr),
++  STATCROSS(FetchXor),
++  STATCROSS(FetchNand),
++  STATCROSS(CAS),
++  STATCROSS(Fence),
++
+   // Dynamic annotations.
+   StatAnnotation,
+   StatAnnotateHappensBefore,
+@@ -173,6 +210,7 @@
+   StatMtxFired,
+   StatMtxRacy,
+   StatMtxFD,
++  StatMtxSC,
+   StatMtxGlobalProc,
+ 
+   // This must be the last.
+@@ -179,6 +217,8 @@
+   StatCnt
+ };
+ 
++#undef STATCROSS
++
+ }  // namespace __tsan
+ 
+ #endif  // TSAN_STAT_H
+Index: rtl/tsan_sync.cc
+===================================================================
+--- rtl/tsan_sync.cc	(revision 272794)
++++ rtl/tsan_sync.cc	(working copy)
+@@ -51,8 +51,9 @@
+     CHECK_EQ(clock.size(), 0);
+     CHECK_EQ(read_clock.size(), 0);
+   } else {
+-    clock.Reset(&proc->clock_cache);
+-    read_clock.Reset(&proc->clock_cache);
++    clock.Reset(&proc->clock_cache, &proc->vclock_cache);
++    read_clock.Reset(&proc->clock_cache, &proc->vclock_cache);
++    store_buffer.Reset(proc);
+   }
+ }
+ 
+Index: rtl/tsan_sync.h
+===================================================================
+--- rtl/tsan_sync.h	(revision 272794)
++++ rtl/tsan_sync.h	(working copy)
+@@ -20,6 +20,7 @@
+ #include "tsan_clock.h"
+ #include "tsan_mutex.h"
+ #include "tsan_dense_alloc.h"
++#include "tsan_relaxed.h"
+ 
+ namespace __tsan {
+ 
+@@ -41,6 +42,10 @@
+   bool is_linker_init;
+   u32 next;  // in MetaMap
+   DDMutex dd;
++  //
++  // StoreBuffer of previous writes.
++  StoreBuffer store_buffer;
++  //
+   SyncClock read_clock;  // Used for rw mutexes only.
+   // The clock is placed last, so that it is situated on a different cache line
+   // with the mtx. This reduces contention for hot sync objects.
