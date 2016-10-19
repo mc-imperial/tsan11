@@ -3,7 +3,7 @@
 CC=false
 CXX=clang++
 
-CXXFLAGS=-std=c++0x -pthread -Wall -fsanitize=thread -g -I../include
+CXXFLAGS=-std=c++0x -pthread -Wall $(SANITIZE) -g -I../include
 
 UNAME = $(shell uname)
 

@@ -24,6 +24,7 @@ cdschecker = os.path.join(source_root, "cdschecker_tests")
 class CDSCheckerBuildVersion(object):
 
     def __init__(self, suffix: str, sanitize: bool, patched_llvm: bool):
+        self.suffix = suffix
         self.build = os.path.join(build_root, "cdschecker_build" + suffix)
         self.test_all = os.path.join(self.build, "test_all.sh")
         self.llvm_build_bin = llvm_patched_build_bin if patched_llvm else llvm_build_bin
@@ -38,6 +39,8 @@ cdschecker_build_tsan11 = CDSCheckerBuildVersion("_tsan11", True, True)
 
 
 saved_path = os.environ["PATH"]
+
+fast_check = True
 
 # Utils #
 
@@ -94,13 +97,22 @@ def reset_path():
 
 # Main targets #
 
+
 def get_llvm():
+    print("get_llvm")
+    if fast_check and os.path.exists(llvm):
+        print("skipping")
+        return
     mkdir_p(llvm)
     os.chdir(llvm)
     subprocess.check_call("get-llvm.sh")
 
 
 def build_llvm():
+    print("build_llvm")
+    if fast_check and os.path.exists(llvm_build):
+        print("skipping")
+        return
     get_llvm()
     mkdir_p(llvm_build)
     os.chdir(llvm_build)
@@ -109,6 +121,10 @@ def build_llvm():
 
 
 def get_llvm_patched():
+    print("get_llvm_patched")
+    if fast_check and os.path.exists(llvm_patched):
+        print("skipping")
+        return
     get_llvm()
     rmtree(llvm_patched_lib_tsan)
     copytree(llvm, llvm_patched)
@@ -117,6 +133,10 @@ def get_llvm_patched():
 
 
 def build_llvm_patched():
+    print("build_llvm_patched")
+    if fast_check and os.path.exists(llvm_patched_build):
+        print("skipping")
+        return
     get_llvm_patched()
     mkdir_p(llvm_patched_build)
     os.chdir(llvm_patched_build)
@@ -124,7 +144,11 @@ def build_llvm_patched():
     subprocess.check_call(["make", "-j8"])
 
 
-def build_cdschecker_tsan(cdschecker_build: CDSCheckerBuildVersion):
+def build_cdschecker(cdschecker_build: CDSCheckerBuildVersion):
+    print("build_cdschecker" + cdschecker_build.suffix)
+    # if fast_check and os.path.exists(cdschecker_build.build):
+    #     print("skipping")
+    #     return
     if cdschecker_build.patched_llvm:
         build_llvm_patched()
     else:
@@ -133,18 +157,24 @@ def build_cdschecker_tsan(cdschecker_build: CDSCheckerBuildVersion):
     os.chdir(cdschecker_build.build)
     try:
         add_path(cdschecker_build.llvm_build_bin)
-        # TODO: use cdschecker_build.sanitize
+        os.environ["SANITIZE"] = "-fsanitize=thread" if cdschecker_build.sanitize else ""
         subprocess.check_call(["make"])
     finally:
         reset_path()
 
 
-def run_cdschecker_tsan(cdschecker_build: CDSCheckerBuildVersion):
-    build_cdschecker_tsan(cdschecker_build)
+def run_cdschecker(cdschecker_build: CDSCheckerBuildVersion):
+    print("run_cdschecker" + cdschecker_build.suffix)
+    if fast_check and os.path.exists(cdschecker_build.results):
+        print("skipping")
+        return
+    build_cdschecker(cdschecker_build)
     os.chdir(cdschecker_build.build)
     remove(cdschecker_build.results)
     with io.open(cdschecker_build.results, "w+") as f:
         subprocess.run([cdschecker_build.test_all], check=True, stdout=f, stderr=subprocess.STDOUT)
 
 if __name__ == "__main__":
-    run_cdschecker_tsan(cdschecker_build_tsan11)
+    run_cdschecker(cdschecker_build_normal)
+    run_cdschecker(cdschecker_build_tsan)
+    run_cdschecker(cdschecker_build_tsan11)
