@@ -112,6 +112,7 @@ def get_llvm():
     if fast_check and os.path.exists(llvm):
         print("skipping")
         return
+    print("get_llvm go")
     mkdir_p(llvm)
     subprocess.check_call("get-llvm.sh", cwd=llvm)
 
@@ -122,6 +123,7 @@ def build_llvm():
         print("skipping")
         return
     get_llvm()
+    print("build_llvm go")
     mkdir_p(llvm_build)
     subprocess.check_call(["cmake", "-G", "Unix Makefiles", "-DCMAKE_BUILD_TYPE=Release", llvm], cwd=llvm_build)
     subprocess.check_call(["make", "-j8"], cwd=llvm_build)
@@ -133,6 +135,7 @@ def get_llvm_patched():
         print("skipping")
         return
     get_llvm()
+    print("get_llvm_patched go")
     rmtree(llvm_patched_lib_tsan)
     copytree(llvm, llvm_patched)
     subprocess.check_call(["svn", "patch", patch_file], cwd=llvm_patched_lib_tsan)
@@ -144,6 +147,7 @@ def build_llvm_patched():
         print("skipping")
         return
     get_llvm_patched()
+    print("build_llvm_patched go")
     mkdir_p(llvm_patched_build)
     subprocess.check_call(["cmake", "-G", "Unix Makefiles", "-DCMAKE_BUILD_TYPE=Release", llvm_patched], cwd=llvm_patched_build)
     subprocess.check_call(["make", "-j8"], cwd=llvm_patched_build)
@@ -155,6 +159,7 @@ def build_cdschecker(config: BuildConfig):
         build_llvm_patched()
     else:
         build_llvm()
+    print("build_cdschecker" + config.suffix + " go")
     copytree(cdschecker, cdschecker_build + config.suffix)
     new_env = os.environ.copy()
     new_env["PATH"] = (llvm_patched_build_bin if config.patched_llvm else llvm_build_bin) + os.pathsep + new_env["PATH"]
@@ -170,6 +175,7 @@ def run_cdschecker(config: BuildConfig):
         return
     build_cdschecker(config)
     remove(results_file)
+    print("run_cdschecker" + config.suffix + " go - this may take a while - results will be written to " + results_file)
     with io.open(results_file, "w+") as f:
         subprocess.run(
             [os.path.join(cdschecker_build + config.suffix, "test_all.sh")],
@@ -185,6 +191,7 @@ def build_litmus_tests(config: BuildConfig):
         build_llvm_patched()
     else:
         build_llvm()
+    print("build litmus tests go")
     copytree(litmus_tests, litmus_tests_build + config.suffix)
     new_env = os.environ.copy()
     new_env["PATH"] = (llvm_patched_build_bin if config.patched_llvm else llvm_build_bin) + os.pathsep + new_env["PATH"]
@@ -199,6 +206,7 @@ def run_litmus_tests(config: BuildConfig):
         print("skipping")
         return
     build_litmus_tests(config)
+    print("run_litmus_tests" + config.suffix + " go - this may take a while - results will be written to " + results_file)
     remove(results_file)
     with io.open(results_file, "w+") as f:
         subprocess.run(
@@ -219,16 +227,19 @@ def get_firefox():
     subprocess.check_call(["hg", "update", "298600"], cwd=firefox)
     shutil.copyfile(mozconfig, os.path.join(firefox, "mozconfig"))
 
+# needs: autoconf2.13
 
 def build_firefox(config: BuildConfig):
     print("build_firefox" + config.suffix)
     if fast_check and os.path.exists(firefox_build + config.suffix):
         print("skipping")
+        return
     get_firefox()
     if config.patched_llvm:
         build_llvm_patched()
     else:
         build_llvm()
+    print("build_firefox" + config.suffix + " go")
     mkdir_p(firefox_build + config.suffix)
     new_env = os.environ.copy()
     new_env["MOZ_OBJDIR"] = firefox_build + config.suffix
@@ -236,6 +247,7 @@ def build_firefox(config: BuildConfig):
     new_env["CFLAGS"] = "-fsanitize=thread -fPIC -pie" if config.sanitize else ""
     new_env["CXXFLAGS"] = "-fsanitize=thread -fPIC -pie" if config.sanitize else ""
     new_env["LDFLAGS"] = "-fsanitize=thread -fPIC -pie" if config.sanitize else ""
+    new_env["NO_MERCURIAL_SETUP_CHECK"] = "1"
     subprocess.check_call(
         ["make", "-f", "client.mk"],
         env=new_env,
@@ -247,4 +259,4 @@ if __name__ == "__main__":
     # for config in [config_normal, config_tsan, config_tsan11]:
     #     run_cdschecker(config)
     #     run_litmus_tests(config)
-    build_firefox()
+    build_firefox(config_normal)
