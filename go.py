@@ -18,8 +18,8 @@ llvm_patched_build = os.path.join(build_root, "llvm_patched_build")
 llvm_patched_build_bin = os.path.join(llvm_patched_build, "bin")
 patch_file = os.path.join(source_root, "scripts", "tsan11.diff")
 
-cdschecker = os.path.join(source_root, "cdschecker_tests")
-cdschecker_build = os.path.join(build_root, "cdschecker_build")
+cdschecker_modified_bench = os.path.join(source_root, "cdschecker_modified_benchmarks")
+cdschecker_modified_bench_build = os.path.join(build_root, "cdschecker_modified_benchmarks_build")
 
 litmus_tests = os.path.join(source_root, "litmus_tests")
 litmus_tests_build = os.path.join(build_root, "litmus_tests_build")
@@ -153,35 +153,35 @@ def build_llvm_patched():
     subprocess.check_call(["make", "-j8"], cwd=llvm_patched_build)
 
 
-def build_cdschecker(config: BuildConfig):
+def build_cdschecker_modified_bench(config: BuildConfig):
     print("build_cdschecker" + config.suffix)
     if config.patched_llvm:
         build_llvm_patched()
     else:
         build_llvm()
     print("build_cdschecker" + config.suffix + " go")
-    copytree(cdschecker, cdschecker_build + config.suffix)
+    copytree(cdschecker_modified_bench, cdschecker_modified_bench_build + config.suffix)
     new_env = os.environ.copy()
     new_env["PATH"] = (llvm_patched_build_bin if config.patched_llvm else llvm_build_bin) + os.pathsep + new_env["PATH"]
     new_env["SANITIZE"] = "-fsanitize=thread" if config.sanitize else ""
-    subprocess.check_call(["make"], cwd=cdschecker_build+config.suffix, env=new_env)
+    subprocess.check_call(["make"], cwd=cdschecker_modified_bench_build + config.suffix, env=new_env)
 
 
-def run_cdschecker(config: BuildConfig):
+def run_cdschecker_modified_bench(config: BuildConfig):
     print("run_cdschecker" + config.suffix)
     results_file = os.path.join(build_root, "cdschecker_results" + config.suffix + ".txt")
     if fast_check and os.path.exists(results_file):
         print("skipping")
         return
-    build_cdschecker(config)
+    build_cdschecker_modified_bench(config)
     remove(results_file)
     print("run_cdschecker" + config.suffix + " go - this may take a while - results will be written to " + results_file)
     with io.open(results_file, "w+") as f:
         subprocess.check_call(
-            [os.path.join(cdschecker_build + config.suffix, "test_all.sh")],
+            [os.path.join(cdschecker_modified_bench_build + config.suffix, "test_all.sh")],
             stdout=f,
             stderr=subprocess.STDOUT,
-            cwd=cdschecker_build + config.suffix)
+            cwd=cdschecker_modified_bench_build + config.suffix)
 
 
 def build_litmus_tests(config: BuildConfig):
@@ -255,7 +255,7 @@ def build_firefox(config: BuildConfig):
 
 if __name__ == "__main__":
     for config in [config_normal, config_tsan, config_tsan11]:
-        run_cdschecker(config)
+        run_cdschecker_modified_bench(config)
         run_litmus_tests(config)
     # build_firefox(config_normal)
     # build_llvm()
