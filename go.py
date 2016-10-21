@@ -177,9 +177,8 @@ def run_cdschecker(config: BuildConfig):
     remove(results_file)
     print("run_cdschecker" + config.suffix + " go - this may take a while - results will be written to " + results_file)
     with io.open(results_file, "w+") as f:
-        subprocess.run(
+        subprocess.check_call(
             [os.path.join(cdschecker_build + config.suffix, "test_all.sh")],
-            check=True,
             stdout=f,
             stderr=subprocess.STDOUT,
             cwd=cdschecker_build + config.suffix)
@@ -209,9 +208,8 @@ def run_litmus_tests(config: BuildConfig):
     print("run_litmus_tests" + config.suffix + " go - this may take a while - results will be written to " + results_file)
     remove(results_file)
     with io.open(results_file, "w+") as f:
-        subprocess.run(
+        subprocess.check_call(
             [os.path.join(litmus_tests_build + config.suffix, "run_all.sh")],
-            check=True,
             stdout=f,
             stderr=subprocess.STDOUT,
             cwd=litmus_tests_build+config.suffix)
@@ -256,7 +254,8 @@ def build_firefox(config: BuildConfig):
 
 
 if __name__ == "__main__":
-    # for config in [config_normal, config_tsan, config_tsan11]:
-    #     run_cdschecker(config)
-    #     run_litmus_tests(config)
-    build_firefox(config_normal)
+    for config in [config_normal, config_tsan, config_tsan11]:
+        run_cdschecker(config)
+        run_litmus_tests(config)
+    # build_firefox(config_normal)
+    # build_llvm()
