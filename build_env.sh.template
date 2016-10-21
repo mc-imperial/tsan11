@@ -4,7 +4,7 @@ set -e
 set -u
 
 export TSAN11_SOURCE_ROOT=/data/tsan11
-export TSAN11_BUILD_ROOT=/data/tsan11/build
+export TSAN11_BUILD_ROOT=/data/tsan11_build
 
 
 ## No need to edit below here:
