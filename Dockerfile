@@ -8,6 +8,8 @@ RUN \
     ccache python-dev python-pip python-setuptools unzip uuid zip \
     libasound2-dev
 
+RUN apt-get -y install subversion wget git ipython3 time
+
 RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 COPY . /data/tsan11/

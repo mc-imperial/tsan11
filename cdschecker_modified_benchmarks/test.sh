@@ -7,7 +7,7 @@ COUNT_DATA_RACE=0
 COUNT_TIME=0
 
 for i in `seq 1 1 $TOTAL_RUN` ; do
-  OUTPUT="$(time -f "time: %U %S" $EXE 2>&1)"
+  OUTPUT="$(/usr/bin/time -f "time: %U %S" $EXE 2>&1)"
   RACE="$(echo "$OUTPUT" | grep "data race")"
   if [ -n "$RACE" ] ; then
     ((++COUNT_DATA_RACE))
