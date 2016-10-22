@@ -28,17 +28,7 @@ firefox = os.path.join(build_root, "firefox")
 firefox_build = os.path.join(build_root, "firefox_build")
 mozconfig = os.path.join(source_root, "scripts", "mozconfig")
 
-
-# class CDSCheckerBuildVersion(object):
-#
-#     def __init__(self, suffix: str, sanitize: bool, patched_llvm: bool):
-#         self.suffix = suffix
-#         self.build = os.path.join(build_root, "cdschecker_build" + suffix)
-#         self.test_all = os.path.join(self.build, "test_all.sh")
-#         self.llvm_build_bin = llvm_patched_build_bin if patched_llvm else llvm_build_bin
-#         self.sanitize = sanitize
-#         self.results = os.path.join(build_root, "cdschecker" + suffix + "_results.txt")
-#         self.patched_llvm = patched_llvm
+cdschecker = os.path.join(build_root, "cdschecker")
 
 
 class BuildConfig(object):
