@@ -158,8 +158,8 @@ def build_cdschecker_modified_bench(config: BuildConfig):
 
 
 def run_cdschecker_modified_bench(config: BuildConfig):
-    print("run_cdschecker" + config.suffix)
-    results_file = os.path.join(build_root, "cdschecker_results" + config.suffix + ".txt")
+    print("run_cdschecker_modified_bench" + config.suffix)
+    results_file = os.path.join(build_root, "cdschecker_modified_bench_results" + config.suffix + ".txt")
     if fast_check and os.path.exists(results_file):
         print("skipping")
         return
@@ -217,6 +217,7 @@ def get_firefox():
 
 # needs: autoconf2.13
 
+
 def build_firefox(config: BuildConfig):
     print("build_firefox" + config.suffix)
     if fast_check and os.path.exists(firefox_build + config.suffix):
@@ -242,10 +243,18 @@ def build_firefox(config: BuildConfig):
         cwd=firefox)
 
 
+def build():
+    for config in [config_normal, config_tsan, config_tsan11]:
+        build_cdschecker_modified_bench(config)
+        build_litmus_tests(config)
 
-if __name__ == "__main__":
+
+def run():
     for config in [config_normal, config_tsan, config_tsan11]:
         run_cdschecker_modified_bench(config)
         run_litmus_tests(config)
+
+if __name__ == "__main__":
+    run()
     # build_firefox(config_normal)
     # build_llvm()

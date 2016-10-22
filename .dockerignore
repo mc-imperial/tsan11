@@ -1,4 +1,6 @@
 
+/.git/
+
 # IntelliJ.
 *.iml
 /.idea/
