@@ -29,6 +29,9 @@ firefox_build = os.path.join(build_root, "firefox_build")
 mozconfig = os.path.join(source_root, "scripts", "mozconfig")
 
 cdschecker = os.path.join(build_root, "cdschecker")
+cdschecker_bench = os.path.join(build_root, "cdschecker", "benchmarks")
+cdschecker_build = os.path.join(build_root, "cdschecker_build")
+cdschecker_bench_build = os.path.join(build_root, "cdschecker_build", "benchmarks")
 
 
 class BuildConfig(object):
@@ -143,6 +146,51 @@ def build_llvm_patched():
     subprocess.check_call(["make", "-j8"], cwd=llvm_patched_build)
 
 
+def get_cdschecker():
+    print("get_cdschecker")
+    if fast_check and os.path.exists(cdschecker):
+        print("skipping")
+        return
+    print("get_cdschecker go")
+    mkdir_p(cdschecker)
+    subprocess.check_call(
+        ["git", "clone", "git://demsky.eecs.uci.edu/model-checker.git", "."],
+        cwd=cdschecker)
+    subprocess.check_call(
+        ["git", "checkout", "88fb5522811e0bd481ad3e60b70fe40fbc9c3e0f"],
+        cwd=cdschecker)
+    mkdir_p(cdschecker_bench)
+    subprocess.check_call(
+        ["git", "clone", "git://demsky.eecs.uci.edu/model-checker-benchmarks.git", "."],
+        cwd=cdschecker_bench)
+    subprocess.check_call(
+        ["git", "checkout", "c046bae812a0dd4d54be2236487c112d36641538"],
+        cwd=cdschecker_bench)
+
+
+def build_cdschecker():
+    print("build_cdschecker")
+    if fast_check and os.path.exists(cdschecker_build):
+        print("skipping")
+        return
+    get_cdschecker()
+    build_llvm()
+    print("build_cdschecker go")
+    copytree(cdschecker, cdschecker_build)
+    new_env = os.environ.copy()
+    new_env["CC"] = "clang"
+    new_env["CXX"] = "clang++"
+    new_env["PATH"] = llvm_build_bin + os.pathsep + new_env["PATH"]
+    subprocess.check_call(
+        ["make", "-e"],
+        cwd=cdschecker_build,
+        env=new_env)
+    subprocess.check_call(
+        ["make", "-e", "benchmarks"],
+        cwd=cdschecker_build,
+        env=new_env)
+
+
 def build_cdschecker_modified_bench(config: BuildConfig):
     print("build_cdschecker" + config.suffix)
     if config.patched_llvm:
@@ -247,6 +295,7 @@ def build():
     for config in [config_normal, config_tsan, config_tsan11]:
         build_cdschecker_modified_bench(config)
         build_litmus_tests(config)
+    build_cdschecker()
 
 
 def run():
