@@ -337,6 +337,7 @@ def build_firefox(config: BuildConfig):
     new_env["CXXFLAGS"] = "-fsanitize=thread -fPIC -pie" if config.sanitize else ""
     new_env["LDFLAGS"] = "-fsanitize=thread -fPIC -pie" if config.sanitize else ""
     new_env["NO_MERCURIAL_SETUP_CHECK"] = "1"
+    new_env["SHELL"] = "bash"
     subprocess.check_call(
         ["make", "-f", "client.mk"],
         env=new_env,
