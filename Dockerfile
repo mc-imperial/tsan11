@@ -1,4 +1,4 @@
-FROM phusion/baseimage:0.9.18
+FROM ubuntu:14.04
 
 RUN \
   apt-get update && \
@@ -11,7 +11,7 @@ RUN \
 
 RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-RUN adduser --disabled-password --gecos "" paul
+COPY . /data/tsan11/
 
-CMD ["/sbin/my_init"]
+CMD ["/data/tsan11/build_env.sh.template"]
 
