@@ -151,7 +151,7 @@ def build_llvm():
     print("build_llvm go")
     mkdir_p(llvm_build)
     new_env = os.environ.copy()
-    new_env["PATH"] = os.pathsep.join(build_root, cmake_bin_dir, new_env["PATH"])
+    new_env["PATH"] = os.pathsep.join([build_root, cmake_bin_dir, new_env["PATH"]])
     subprocess.check_call(
         ["cmake", "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", llvm],
         cwd=llvm_build,
@@ -186,7 +186,7 @@ def build_llvm_patched():
     print("build_llvm_patched go")
     mkdir_p(llvm_patched_build)
     new_env = os.environ.copy()
-    new_env["PATH"] = os.pathsep.join(build_root, cmake_bin_dir, new_env["PATH"])
+    new_env["PATH"] = os.pathsep.join([build_root, cmake_bin_dir, new_env["PATH"]])
     subprocess.check_call(
         ["cmake", "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", llvm_patched],
         cwd=llvm_patched_build,
