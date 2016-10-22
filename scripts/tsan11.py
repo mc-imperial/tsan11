@@ -7,6 +7,10 @@ import io
 source_root = os.environ["TSAN11_SOURCE_ROOT"]
 build_root = os.environ["TSAN11_BUILD_ROOT"]
 
+ninja_file = os.path.join(build_root, "ninja")
+
+cmake_bin_dir = os.path.join(build_root, "cmake-3.6.2-Linux-x86_64", "bin")
+
 llvm = os.path.join(build_root, "llvm")
 llvm_lib_tsan = os.path.join(llvm, "projects", "compiler-rt", "lib", "tsan")
 llvm_build = os.path.join(build_root, "llvm_build")
@@ -96,8 +100,34 @@ def remove(path: str):
             raise
 
 
-
 # Main targets #
+
+def get_ninja():
+    print("get_ninja")
+    if fast_check and os.path.exists(ninja_file):
+        print("skipping")
+        return
+    print("get_ninja go")
+    subprocess.check_call(
+        ["wget", "https://github.com/ninja-build/ninja/releases/download/v1.7.1/ninja-linux.zip"],
+        cwd=build_root)
+    subprocess.check_call(
+        ["unzip", "ninja-linux.zip"],
+        cwd=build_root)
+
+
+def get_cmake():
+    print("get_cmake")
+    if fast_check and os.path.exists(cmake_bin_dir):
+        print("skipping")
+        return
+    print("get_cmake go")
+    subprocess.check_call(
+        ["wget", "https://cmake.org/files/v3.6/cmake-3.6.2-Linux-x86_64.tar.gz"],
+        cwd=build_root)
+    subprocess.check_call(
+        ["tar", "-xf", "cmake-3.6.2-Linux-x86_64.tar.gz"],
+        cwd=build_root)
 
 
 def get_llvm():
@@ -107,7 +137,7 @@ def get_llvm():
         return
     print("get_llvm go")
     mkdir_p(llvm)
-    subprocess.check_call("get-llvm.sh", cwd=llvm)
+    subprocess.check_call(["get-llvm.sh"], cwd=llvm)
 
 
 def build_llvm():
@@ -116,10 +146,21 @@ def build_llvm():
         print("skipping")
         return
     get_llvm()
+    get_ninja()
+    get_cmake()
     print("build_llvm go")
     mkdir_p(llvm_build)
-    subprocess.check_call(["cmake", "-G", "Unix Makefiles", "-DCMAKE_BUILD_TYPE=Release", llvm], cwd=llvm_build)
-    subprocess.check_call(["make", "-j8"], cwd=llvm_build)
+    new_env = os.environ.copy()
+    new_env["PATH"] = os.pathsep.join(build_root, cmake_bin_dir, new_env["PATH"])
+    subprocess.check_call(
+        ["cmake", "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", llvm],
+        cwd=llvm_build,
+        env=new_env)
+    subprocess.check_call(
+        ["cmake", "--build", os.path.curdir, "--config", "Release"],
+        cwd=llvm_build,
+        env=new_env)
+    # subprocess.check_call(["make", "-j8"], cwd=llvm_build)
 
 
 def get_llvm_patched():
@@ -140,10 +181,21 @@ def build_llvm_patched():
         print("skipping")
         return
     get_llvm_patched()
+    get_ninja()
+    get_cmake()
     print("build_llvm_patched go")
     mkdir_p(llvm_patched_build)
-    subprocess.check_call(["cmake", "-G", "Unix Makefiles", "-DCMAKE_BUILD_TYPE=Release", llvm_patched], cwd=llvm_patched_build)
-    subprocess.check_call(["make", "-j8"], cwd=llvm_patched_build)
+    new_env = os.environ.copy()
+    new_env["PATH"] = os.pathsep.join(build_root, cmake_bin_dir, new_env["PATH"])
+    subprocess.check_call(
+        ["cmake", "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", llvm_patched],
+        cwd=llvm_patched_build,
+        env=new_env)
+    # subprocess.check_call(["make", "-j8"], cwd=llvm_patched_build)
+    subprocess.check_call(
+        ["cmake", "--build", os.path.curdir, "--config", "Release"],
+        cwd=llvm_patched_build,
+        env=new_env)
 
 
 def get_cdschecker():
