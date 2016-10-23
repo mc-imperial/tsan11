@@ -73,11 +73,11 @@ def copytree(src, dst, symlinks=False, ignore=None):
     for item in os.listdir(src):
         s = os.path.join(src, item)
         d = os.path.join(dst, item)
-        if os.path.isdir(s):
+        if os.path.isdir(s) and ((not os.path.islink()) or symlinks):
             copytree(s, d, symlinks, ignore)
         else:
             if not os.path.exists(d) or os.stat(s).st_mtime - os.stat(d).st_mtime > 1:
-                shutil.copy2(s, d)
+                shutil.copy2(s, d, follow_symlinks=symlinks)
 
 
 def rmtree(path: str):
