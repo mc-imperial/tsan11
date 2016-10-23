@@ -36,6 +36,7 @@ cdschecker = os.path.join(build_root, "cdschecker")
 cdschecker_bench = os.path.join(build_root, "cdschecker", "benchmarks")
 cdschecker_build = os.path.join(build_root, "cdschecker_build")
 cdschecker_bench_build = os.path.join(build_root, "cdschecker_build", "benchmarks")
+cdschecker_bench_script = os.path.join(cdschecker_bench_build, "bench.sh")
 
 
 class BuildConfig(object):
@@ -229,18 +230,34 @@ def build_cdschecker():
     build_llvm()
     print("build_cdschecker go")
     copytree(cdschecker, cdschecker_build)
-    new_env = os.environ.copy()
-    new_env["CC"] = "clang"
-    new_env["CXX"] = "clang++"
-    new_env["PATH"] = llvm_build_bin + os.pathsep + new_env["PATH"]
+    # new_env = os.environ.copy()
+    # new_env["CC"] = "clang"
+    # new_env["CXX"] = "clang++"
+    # new_env["PATH"] = llvm_build_bin + os.pathsep + new_env["PATH"]
     subprocess.check_call(
-        ["make", "-e"],
-        cwd=cdschecker_build,
-        env=new_env)
+        ["make"],
+        cwd=cdschecker_build)
+        # env=new_env)
     subprocess.check_call(
-        ["make", "-e", "benchmarks"],
-        cwd=cdschecker_build,
-        env=new_env)
+        ["make", "benchmarks"],
+        cwd=cdschecker_build)
+         #env=new_env)
+
+
+def run_cdschecker():
+    print("run_cdschecker")
+    results_file = os.path.join(build_root, "cdschecker_results.txt")
+    if fast_check and os.path.exists(results_file):
+        print("skipping")
+        return
+    build_cdschecker()
+    print("run_cdschecker go")
+    with io.open(results_file, "w+") as f:
+        subprocess.check_call(
+            [cdschecker_bench_script],
+            stdout=f,
+            stderr=subprocess.STDOUT,
+            cwd=cdschecker_bench_build)
 
 
 def build_cdschecker_modified_bench(config: BuildConfig):
@@ -352,9 +369,10 @@ def build():
 
 
 def run():
-    for config in [config_normal, config_tsan, config_tsan11]:
-        run_cdschecker_modified_bench(config)
-        run_litmus_tests(config)
+    # for config in [config_normal, config_tsan, config_tsan11]:
+    #     run_cdschecker_modified_bench(config)
+    #     run_litmus_tests(config)
+    run_cdschecker()
 
 if __name__ == "__main__":
     run()
