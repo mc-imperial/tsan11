@@ -247,16 +247,17 @@ def build_cdschecker():
 def run_cdschecker():
     print("run_cdschecker")
     results_file = os.path.join(build_root, "cdschecker_results.txt")
+    results_file_err = os.path.join(build_root, "cdschecker_results_stderr.txt")
     if fast_check and os.path.exists(results_file):
         print("skipping")
         return
     build_cdschecker()
     print("run_cdschecker go")
-    with io.open(results_file, "w+") as f:
+    with io.open(results_file, "w+") as f, io.open(results_file_err, "w+") as fe:
         subprocess.check_call(
             [cdschecker_bench_script],
             stdout=f,
-            stderr=subprocess.STDOUT,
+            stderr=fe,
             cwd=cdschecker_bench_build)
 
 
