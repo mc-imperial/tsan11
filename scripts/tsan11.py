@@ -363,6 +363,23 @@ def build_firefox(config: BuildConfig):
         cwd=firefox)
 
 
+def get_depot_tools():
+    # mkdir depot_tools
+    # git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git .
+    # git checkout 99e2cdf47a3f1083bde35d7553fda218fd7f37d6
+    pass
+
+
+def get_chromium():
+    # fetch chromium
+    pass
+
+
+def build_all_firefox():
+    for config in [config_normal, config_tsan, config_tsan11]:
+        build_firefox(config)
+
+
 def build():
     for config in [config_normal, config_tsan, config_tsan11]:
         build_cdschecker_modified_bench(config)
@@ -371,10 +388,11 @@ def build():
 
 
 def run():
-    # for config in [config_normal, config_tsan, config_tsan11]:
-    #     run_cdschecker_modified_bench(config)
-    #     run_litmus_tests(config)
+    for config in [config_normal, config_tsan, config_tsan11]:
+        run_cdschecker_modified_bench(config)
+        run_litmus_tests(config)
     run_cdschecker()
+
 
 if __name__ == "__main__":
     run()
