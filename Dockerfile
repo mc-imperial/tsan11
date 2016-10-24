@@ -53,7 +53,7 @@ RUN \
     realpath rpm ruby \
     subversion \
     ttf-dejavu-core ttf-indic-fonts ttf-kochi-gothic ttf-kochi-mincho \
-    ttf-mscorefonts-installer \
+    msttcorefonts \
     wdiff \
     xcompmgr xfonts-mathml \
     zip zlib1g zlib1g-dbg && \
