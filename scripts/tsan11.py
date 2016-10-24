@@ -227,7 +227,6 @@ def build_cdschecker():
         print("skipping")
         return
     get_cdschecker()
-    build_llvm()
     print("build_cdschecker go")
     copytree(cdschecker, cdschecker_build)
     # new_env = os.environ.copy()
