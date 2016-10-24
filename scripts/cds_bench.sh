@@ -6,16 +6,15 @@
 DATECMD="date +%Y-%m-%d-%R"
 DATE="`${DATECMD}`"
 
-TESTS="chase-lev-deque/main"
-# Paul: skip `spsc-queue` as it deadlocks.
-# TESTS+=" spsc-queue/spsc-queue"
-TESTS+=" spsc-bugfix/spsc-queue"
 TESTS+=" barrier/barrier"
-TESTS+=" dekker-fences/dekker-fences"
-TESTS+=" mcs-lock/mcs-lock"
-TESTS+=" mpmc-queue/mpmc-queue-rdwr"
+TESTS="chase-lev-deque/main"
 TESTS+=" ms-queue/main"
 TESTS+=" linuxrwlocks/linuxrwlocks"
+TESTS+=" mcs-lock/mcs-lock"
+TESTS+=" mpmc-queue/mpmc-queue-rdwr"
+TESTS+=" dekker-fences/dekker-fences"
+# TESTS+=" spsc-queue/spsc-queue"
+# TESTS+=" spsc-bugfix/spsc-queue"
 
 MODEL_ARGS="-y -m 2 -u 3"
 
