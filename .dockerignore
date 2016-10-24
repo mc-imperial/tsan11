@@ -9,3 +9,5 @@
 
 **/__pycache__/
 **/.git/
+
+**/build_env.sh
