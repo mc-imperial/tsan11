@@ -5,10 +5,8 @@ set -u
 
 
 cd /data/tsan11
-./build_env.sh.template <<EOF2
-python3 - <<EOF1
-import tsan11
-tsan11.build_cdschecker()
-EOF1
-EOF2
+./build_env.sh.template <<EOF
+build
+build_firefox
+EOF
 
