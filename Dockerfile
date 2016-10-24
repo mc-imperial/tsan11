@@ -15,7 +15,7 @@ RUN \
 
 COPY . /data/tsan11/
 
-RUN
+RUN \
   adduser --disabled-password --gecos "" paul && \
   chown -R paul:paul /data
 
@@ -25,7 +25,7 @@ RUN /data/tsan11/docker/build
 
 USER root
 
-RUN
+RUN \
   /data/tsan11/scripts/enable_insecure_key paul && \
   /usr/sbin/enable_insecure_key && \
   rm -f /etc/service/sshd/down
