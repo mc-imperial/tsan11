@@ -1,16 +1,11 @@
 
 # IntelliJ.
-*.iml
-/.idea/
+**/*.iml
+**/.idea/
 
 # Temp.
-*~
-*.bak
+**/*~
+**/*.bak
 
-__pycache__/
-/.git/
-/Dockerfile
-/.dockerignore
-
-
-
+**/__pycache__/
+**/.git/
