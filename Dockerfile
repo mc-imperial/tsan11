@@ -9,17 +9,15 @@ RUN \
     libao-dev libpulse-dev \
     ccache python-dev python-pip python-setuptools unzip uuid zip \
     libasound2-dev \
-    subversion wget git ipython3 time mercurial
-
-RUN apt-get -y install x11-apps
-
-RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+    subversion wget git ipython3 time mercurial xauth x11-apps \
+    emacs nano && \
+  apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 COPY . /data/tsan11/
 
-RUN adduser --disabled-password --gecos "" paul
-
-RUN chown -R paul:paul /data
+RUN
+  adduser --disabled-password --gecos "" paul && \
+  chown -R paul:paul /data
 
 USER paul
 
@@ -27,10 +25,9 @@ RUN /data/tsan11/docker/build
 
 USER root
 
-RUN /data/tsan11/scripts/enable_insecure_key paul
-
-RUN /usr/sbin/enable_insecure_key
-
-RUN rm -f /etc/service/sshd/down
+RUN
+  /data/tsan11/scripts/enable_insecure_key paul && \
+  /usr/sbin/enable_insecure_key && \
+  rm -f /etc/service/sshd/down
 
 CMD ["/sbin/my_init"]
