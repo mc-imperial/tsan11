@@ -1,5 +1,7 @@
 FROM phusion/baseimage:0.9.18
 
+RUN /etc/my_init.d/00_regen_ssh_host_keys.sh
+
 RUN \
   apt-get update && \
   apt-get -y install \
@@ -7,19 +9,28 @@ RUN \
     libao-dev libpulse-dev \
     ccache python-dev python-pip python-setuptools unzip uuid zip \
     libasound2-dev \
-    subversion wget git ipython3 time mercurial && \
-  apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+    subversion wget git ipython3 time mercurial
+
+RUN apt-get -y install x11-apps
+
+RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 COPY . /data/tsan11/
 
 RUN adduser --disabled-password --gecos "" paul
+
+RUN chown -R paul:paul /data
+
+USER paul
+
+RUN /data/tsan11/docker/build
+
+USER root
 
 RUN /data/tsan11/scripts/enable_insecure_key paul
 
 RUN /usr/sbin/enable_insecure_key
 
 RUN rm -f /etc/service/sshd/down
-
-RUN /etc/my_init.d/00_regen_ssh_host_keys.sh
 
 CMD ["/sbin/my_init"]
