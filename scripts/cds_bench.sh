@@ -7,7 +7,8 @@ DATECMD="date +%Y-%m-%d-%R"
 DATE="`${DATECMD}`"
 
 TESTS="chase-lev-deque/main"
-TESTS+=" spsc-queue/spsc-queue"
+# Paul: skip `spsc-queue` as it deadlocks.
+# TESTS+=" spsc-queue/spsc-queue"
 TESTS+=" spsc-bugfix/spsc-queue"
 TESTS+=" barrier/barrier"
 TESTS+=" dekker-fences/dekker-fences"

@@ -2,7 +2,7 @@
 set -e
 set -u
 
-# skip spsc-queue as it seems to deadlock.
+# Paul: skip `spsc-queue` as it deadlocks.
 
 for t in barrier chase-lev-deque dekker-fences linuxrwlocks mcs-lock mpmc-queue ms-queue; do
   cd $t
