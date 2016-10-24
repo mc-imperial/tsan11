@@ -1,6 +1,4 @@
 
-/.git/
-
 # IntelliJ.
 *.iml
 /.idea/
@@ -10,4 +8,9 @@
 *.bak
 
 __pycache__/
+/.git/
+/Dockerfile
+/.dockerignore
+
+
 
