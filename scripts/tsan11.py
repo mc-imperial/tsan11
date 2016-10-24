@@ -37,7 +37,7 @@ cdschecker_bench = os.path.join(build_root, "cdschecker", "benchmarks")
 cdschecker_build = os.path.join(build_root, "cdschecker_build")
 cdschecker_bench_build = os.path.join(build_root, "cdschecker_build", "benchmarks")
 cdschecker_bench_script = os.path.join(cdschecker_bench_build, "bench.sh")
-
+cdschecker_bench_script_modified = os.path.join(source_root, "scripts", "cds_bench.sh")
 
 class BuildConfig(object):
     def __init__(self, suffix: str, sanitize: bool, patched_llvm: bool):
@@ -242,6 +242,7 @@ def build_cdschecker():
         ["make", "benchmarks"],
         cwd=cdschecker_build)
          #env=new_env)
+    shutil.copyfile(cdschecker_bench_script_modified, cdschecker_bench_script)
 
 
 def run_cdschecker():
