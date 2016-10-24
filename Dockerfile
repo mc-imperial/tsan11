@@ -10,7 +10,11 @@ RUN \
     subversion wget git ipython3 time mercurial && \
   apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
+COPY . /data/tsan11/
+
 RUN adduser --disabled-password --gecos "" paul
+
+RUN /data/tsan11/scripts/enable_insecure_key paul
 
 RUN /usr/sbin/enable_insecure_key
 
