@@ -14,12 +14,14 @@ cmake_bin_dir = os.path.join(build_root, "cmake-3.6.2-Linux-x86_64", "bin")
 llvm = os.path.join(build_root, "llvm")
 llvm_lib_tsan = os.path.join(llvm, "projects", "compiler-rt", "lib", "tsan")
 llvm_build = os.path.join(build_root, "llvm_build")
-llvm_build_bin = os.path.join(llvm_build, "bin")
+llvm_build_bin = os.path.join(llvm_build, "install", "bin")
+llvm_build_lib = os.path.join(llvm_build, "install", "lib")
 
 llvm_patched = os.path.join(build_root, "llvm_patched")
 llvm_patched_lib_tsan = os.path.join(llvm_patched, "projects", "compiler-rt", "lib", "tsan")
 llvm_patched_build = os.path.join(build_root, "llvm_patched_build")
-llvm_patched_build_bin = os.path.join(llvm_patched_build, "bin")
+llvm_patched_build_bin = os.path.join(llvm_patched_build, "install", "bin")
+llvm_patched_build_lib = os.path.join(llvm_patched_build, "install", "lib")
 patch_file = os.path.join(source_root, "scripts", "tsan11.diff")
 
 cdschecker_modified_bench = os.path.join(source_root, "cdschecker_modified_benchmarks")
@@ -38,6 +40,15 @@ cdschecker_build = os.path.join(build_root, "cdschecker_build")
 cdschecker_bench_build = os.path.join(build_root, "cdschecker_build", "benchmarks")
 cdschecker_bench_script = os.path.join(cdschecker_bench_build, "bench.sh")
 cdschecker_bench_script_modified = os.path.join(source_root, "scripts", "cds_bench.sh")
+
+depot_tools = os.path.join(build_root, "depot_tools")
+
+chromium = os.path.join(build_root, "chromium")
+chromium_src_dir = os.path.join(build_root, "chromium", "src")
+
+chromium_build = os.path.join(build_root, "chromium_build")
+chromium_clang_bin = os.path.join("src", "third_party", "llvm-build", "Release+Asserts", "bin")
+chromium_clang_lib = os.path.join("src", "third_party", "llvm-build", "Release+Asserts", "lib")
 
 class BuildConfig(object):
     def __init__(self, suffix: str, sanitize: bool, patched_llvm: bool):
@@ -161,6 +172,11 @@ def build_llvm():
         ["cmake", "--build", os.path.curdir, "--config", "Release"],
         cwd=llvm_build,
         env=new_env)
+    subprocess.check_call(
+        ["cmake", "-DCMAKE_INSTALL_PREFIX=install", "-P", "cmake_install.cmake"],
+        cwd=llvm_build,
+        env=new_env)
+    # call(["cmake", "-DCMAKE_INSTALL_PREFIX=" + path.join(os.pardir, install_dir), "-P", "cmake_install.cmake"])
     # subprocess.check_call(["make", "-j8"], cwd=llvm_build)
 
 
@@ -195,6 +211,10 @@ def build_llvm_patched():
     # subprocess.check_call(["make", "-j8"], cwd=llvm_patched_build)
     subprocess.check_call(
         ["cmake", "--build", os.path.curdir, "--config", "Release"],
+        cwd=llvm_patched_build,
+        env=new_env)
+    subprocess.check_call(
+        ["cmake", "-DCMAKE_INSTALL_PREFIX=install", "-P", "cmake_install.cmake"],
         cwd=llvm_patched_build,
         env=new_env)
 
@@ -363,15 +383,93 @@ def build_firefox(config: BuildConfig):
 
 
 def get_depot_tools():
-    # mkdir depot_tools
-    # git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git .
-    # git checkout 99e2cdf47a3f1083bde35d7553fda218fd7f37d6
-    pass
+    print("get_depot_tools")
+    if fast_check and os.path.exists(depot_tools):
+        print("skipping")
+        return
+    print("get_depot_tools go")
+    mkdir_p(depot_tools)
+    subprocess.check_call(
+        ["git", "clone", "https://chromium.googlesource.com/chromium/tools/depot_tools.git", "."],
+        cwd=depot_tools)
+    subprocess.check_call(
+        ["git", "checkout", "99e2cdf47a3f1083bde35d7553fda218fd7f37d6"],
+        cwd=depot_tools)
 
 
 def get_chromium():
-    # fetch chromium
-    pass
+    print("get_chromium")
+    if fast_check and os.path.exists(chromium):
+        print("skipping")
+        return
+    get_depot_tools()
+    print("get_chromium go")
+    new_env = os.environ.copy()
+    new_env["PATH"] = new_env["PATH"] + os.pathsep + depot_tools
+    mkdir_p(chromium)
+    subprocess.check_call(
+        ["fetch", "--nohooks", "chromium"],
+        cwd=chromium,
+        env=new_env)
+    subprocess.check_call(
+        ["git", "fetch", "--tags"],
+        cwd=chromium_src_dir,
+        env=new_env)
+    subprocess.check_call(
+        ["git", "checkout", "-b", "local_branch", "tags/54.0.2840.71"],
+        cwd=chromium_src_dir,
+        env=new_env)
+    subprocess.check_call(
+        ["gclient", "sync", "--with_branch_heads"],
+        cwd=chromium_src_dir,
+        env=new_env)
+    # gclient runhooks
+    # --nohooks
+
+
+def build_chromium(config: BuildConfig):
+    print("build_chromium")
+    build_dir = chromium_build + config.suffix
+    build_dir_src = os.path.join(build_dir, "src")
+    out_dir = os.path.join("out", "build")
+    if fast_check and os.path.exists(build_dir):
+        print("skipping")
+        return
+    if config.patched_llvm:
+        build_llvm_patched()
+    else:
+        build_llvm()
+    get_chromium()
+    print("build_chromium go")
+    new_env = os.environ.copy()
+    new_env["PATH"] = (llvm_patched_build_bin if config.patched_llvm else llvm_build_bin) + \
+                      os.pathsep + new_env["PATH"] + os.pathsep + depot_tools
+    new_env["EDITOR"] = "echo"
+    copytree(chromium, build_dir)
+    subprocess.check_call(
+        ["gn", "gen", out_dir],
+        cwd=build_dir_src,
+        env=new_env)
+    subprocess.check_call(
+        [
+            "gn",
+            "args",
+            '--args="is_tsan='+('true' if config.sanitize else 'false')+' enable_nacl=false is_debug=false"', out_dir
+        ],
+        cwd=build_dir_src,
+        env=new_env)
+    rmtree(os.path.join(build_dir, chromium_clang_bin))
+    rmtree(os.path.join(build_dir, chromium_clang_lib))
+    copytree(
+        llvm_patched_build_bin if config.patched_llvm else llvm_build_bin,
+        os.path.join(build_dir, chromium_clang_bin))
+    copytree(
+        llvm_patched_build_lib if config.patched_llvm else llvm_build_lib,
+        os.path.join(build_dir, chromium_clang_lib))
+    subprocess.check_call(
+        ["ninja", "-C", out_dir, "chrome"],
+        cwd=build_dir_src,
+        env=new_env)
 
 
 def build_all_firefox():
