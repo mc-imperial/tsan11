@@ -477,6 +477,11 @@ def build_all_firefox():
         build_firefox(config)
 
 
+def build_all_chromium():
+    for config in [config_normal, config_tsan, config_tsan11]:
+        build_chromium(config)
+
+
 def build():
     for config in [config_normal, config_tsan, config_tsan11]:
         build_cdschecker_modified_bench(config)

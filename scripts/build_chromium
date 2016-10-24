@@ -1,0 +1,10 @@
+#!/bin/bash
+set -x
+set -e
+set -u
+
+python3 - <<EOF
+import tsan11
+tsan11.build_all_chromium()
+EOF
+
