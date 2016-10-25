@@ -497,5 +497,3 @@ def run():
 
 if __name__ == "__main__":
     run()
-    # build_firefox(config_normal)
-    # build_llvm()
