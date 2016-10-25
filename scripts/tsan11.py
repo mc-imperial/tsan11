@@ -16,12 +16,14 @@ llvm_lib_tsan = os.path.join(llvm, "projects", "compiler-rt", "lib", "tsan")
 llvm_build = os.path.join(build_root, "llvm_build")
 llvm_build_bin = os.path.join(llvm_build, "install", "bin")
 llvm_build_lib = os.path.join(llvm_build, "install", "lib")
+llvm_build_clang_lib = os.path.join(llvm_build, "install", "lib", "clang", "3.9.0")
 
 llvm_patched = os.path.join(build_root, "llvm_patched")
 llvm_patched_lib_tsan = os.path.join(llvm_patched, "projects", "compiler-rt", "lib", "tsan")
 llvm_patched_build = os.path.join(build_root, "llvm_patched_build")
 llvm_patched_build_bin = os.path.join(llvm_patched_build, "install", "bin")
 llvm_patched_build_lib = os.path.join(llvm_patched_build, "install", "lib")
+llvm_patched_build_clang_lib = os.path.join(llvm_patched_build, "install", "lib", "clang", "3.9.0")
 patch_file = os.path.join(source_root, "scripts", "tsan11.diff")
 
 cdschecker_modified_bench = os.path.join(source_root, "cdschecker_modified_benchmarks")
@@ -47,8 +49,9 @@ chromium = os.path.join(build_root, "chromium")
 chromium_src_dir = os.path.join(build_root, "chromium", "src")
 
 chromium_build = os.path.join(build_root, "chromium_build")
-chromium_clang_bin = os.path.join("src", "third_party", "llvm-build", "Release+Asserts", "bin")
-chromium_clang_lib = os.path.join("src", "third_party", "llvm-build", "Release+Asserts", "lib")
+chromium_clang_lib = os.path.join(
+    "src", "third_party", "llvm-build", "Release+Asserts", "lib", "clang", "4.0.0")
+
 
 class BuildConfig(object):
     def __init__(self, suffix: str, sanitize: bool, patched_llvm: bool):
@@ -428,7 +431,7 @@ def get_chromium():
 
 
 def build_chromium(config: BuildConfig):
-    print("build_chromium")
+    print("build_chromium" + config.suffix)
     build_dir = chromium_build + config.suffix
     build_dir_src = os.path.join(build_dir, "src")
     out_dir = os.path.join("out", "build")
@@ -440,7 +443,7 @@ def build_chromium(config: BuildConfig):
     else:
         build_llvm()
     get_chromium()
-    print("build_chromium go")
+    print("build_chromium go " + config.suffix)
     new_env = os.environ.copy()
     new_env["PATH"] = (llvm_patched_build_bin if config.patched_llvm else llvm_build_bin) + \
                       os.pathsep + new_env["PATH"] + os.pathsep + depot_tools
@@ -454,17 +457,13 @@ def build_chromium(config: BuildConfig):
         [
             "gn",
             "args",
-            '--args="is_tsan='+('true' if config.sanitize else 'false')+' enable_nacl=false is_debug=false"', out_dir
+            '--args=is_tsan='+('true' if config.sanitize else 'false')+' enable_nacl=false is_debug=false', out_dir
         ],
         cwd=build_dir_src,
         env=new_env)
-    rmtree(os.path.join(build_dir, chromium_clang_bin))
     rmtree(os.path.join(build_dir, chromium_clang_lib))
     copytree(
-        llvm_patched_build_bin if config.patched_llvm else llvm_build_bin,
-        os.path.join(build_dir, chromium_clang_bin))
-    copytree(
-        llvm_patched_build_lib if config.patched_llvm else llvm_build_lib,
+        llvm_patched_build_clang_lib if config.patched_llvm else llvm_build_clang_lib,
         os.path.join(build_dir, chromium_clang_lib))
     subprocess.check_call(
         ["ninja", "-C", out_dir, "chrome"],
