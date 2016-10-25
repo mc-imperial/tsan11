@@ -2,9 +2,15 @@ FROM phusion/baseimage:0.9.18
 
 RUN /etc/my_init.d/00_regen_ssh_host_keys.sh
 
+RUN echo "deb http://archive.ubuntu.com/ubuntu/ trusty main universe multiverse restricted" > /etc/apt/sources.list
+RUN echo "deb http://archive.ubuntu.com/ubuntu/ trusty-updates main universe multiverse restricted" >> /etc/apt/sources.list
+RUN echo ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true | debconf-set-selections
+
+
 RUN \
   apt-get update && \
   apt-get -y install \
+    msttcorefonts \
     python autoconf2.13 build-essential libgtk2.0-dev libgtk-3-dev libxt-dev libgconf2-dev libdbus-glib-1-dev yasm \
     libao-dev libpulse-dev \
     ccache python-dev python-pip python-setuptools unzip uuid zip \
@@ -53,7 +59,6 @@ RUN \
     realpath rpm ruby \
     subversion \
     ttf-dejavu-core ttf-indic-fonts ttf-kochi-gothic ttf-kochi-mincho \
-    msttcorefonts \
     wdiff \
     xcompmgr xfonts-mathml \
     zip zlib1g zlib1g-dbg && \
@@ -63,17 +68,15 @@ COPY . /data/tsan11/
 
 RUN \
   adduser --disabled-password --gecos "" paul && \
-  chown -R paul:paul /data
+  chown -R paul:paul /data && \
+  /data/tsan11/scripts/enable_insecure_key paul && \
+  /usr/sbin/enable_insecure_key && \
+  rm -f /etc/service/sshd/down
 
 USER paul
 
 RUN /data/tsan11/docker/build
 
 USER root
-
-RUN \
-  /data/tsan11/scripts/enable_insecure_key paul && \
-  /usr/sbin/enable_insecure_key && \
-  rm -f /etc/service/sshd/down
 
 CMD ["/sbin/my_init"]
