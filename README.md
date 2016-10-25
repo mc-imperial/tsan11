@@ -1,6 +1,6 @@
 # TSan11
 
-Skip to `Using the build shell...` if not using docker.
+Skip to `Starting the build shell` if not using docker.
 
 
 ## Building the docker image from source
@@ -43,16 +43,7 @@ ssh -YCi insecure_key paul@172.17.0.3
 
 You can also `ssh` in as root.
 
-## Using the build shell to build everything except the browsers
-
-Note that everything is pre-built in the docker container
-by default,
-but you can delete the `/data/tsan11_build` directory
-if you want to build from scratch.
-Or, you can build outside the docker container;
-in this case,
-you may need to manually install the dependencies
-found in the [Dockerfile](Dockerfile).
+## Starting the build shell
 
 In the repository root (`/data/tsan11` if inside the docker container):
 
@@ -63,13 +54,30 @@ cp build_env.sh.template build_env.sh
 
 # Start the build shell
 ./build_env.sh
-
-# Type build:
-build
 ```
 
 The build shell starts `bash` with certain environment variables set.
 See [scripts/](scripts/) for available commands.
+
+## Building everything except the browsers
+
+You may wish to SKIP THIS SECTION if using the docker container,
+as everything is pre-built
+by default,
+but you can delete the `/data/tsan11_build` directory
+if you want to build from scratch.
+Or, you can build outside the docker container;
+in this case,
+you may need to manually install the dependencies
+found in the [Dockerfile](Dockerfile).
+
+From the build shell:
+
+```
+# Type build:
+build
+```
+
 The build command executes `python3`,
 imports `scripts/tsan11.py`,
 and calls `build()`.
