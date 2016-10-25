@@ -8,6 +8,6 @@ cd /data/tsan11
 ./build_env.sh.template <<EOF
 # build
 # build_firefox
-build_chromium
+# build_chromium
 EOF
 
