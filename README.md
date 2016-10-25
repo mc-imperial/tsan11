@@ -1,6 +1,6 @@
 # TSan11
 
-
+Skip to `Using the build shell...` if not using docker.
 
 
 ## Building the docker image from source
@@ -27,17 +27,17 @@ docker start -ia tsan11-container
 In a different terminal in a temporary directory:
 
 ```bash
-# Download the "insecure key"
+# Download the "insecure key".
 curl -o insecure_key -fSL https://github.com/phusion/baseimage-docker/raw/master/image/services/sshd/keys/insecure_key
 chmod 600 insecure_key
 
 # Find the IP address of the container:
-docker inspect
+docker inspect tsan11-container
 
-# ssh into the container as paul (replace 172.17.0.3)
+# ssh into the container as paul (replace 172.17.0.3).
 ssh -i insecure_key paul@172.17.0.3
 
-# ssh in with X forwarding and compression
+# Or, ssh in with X forwarding and compression.
 ssh -YCi insecure_key paul@172.17.0.3
 ```
 
@@ -49,8 +49,12 @@ Note that everything is pre-built in the docker container
 by default,
 but you can delete the `/data/tsan11_build` directory
 if you want to build from scratch.
+Or, you can build outside the docker container;
+in this case,
+you may need to manually install the dependencies
+found in the [Dockerfile](Dockerfile).
 
-In the repository root (inside the docker container if using the docker container):
+In the repository root (`/data/tsan11` if inside the docker container):
 
 ```bash
 # Copy the build environment template and edit appropriately.
@@ -63,6 +67,7 @@ cp build_env.sh.template build_env.sh
 # Type build:
 build
 ```
+
 The build shell starts `bash` with certain environment variables set.
 See [scripts/](scripts/) for available commands.
 The build command executes `python3`,
@@ -105,4 +110,55 @@ From the build shell:
 build_firefox
 ```
 
+This will build Firefox three times.
+You will have to run it manually from
+`TSAN11_BUILD_ROOT/firefox_build{,_tsan,_tsan11}/dist/bin/firefox`.
 
+## Building Chromium
+
+From the build shell:
+
+```bash
+# Type:
+build_chromium
+```
+
+This will build Chromium three times.
+You will have to run it manually from
+`TSAN11_BUILD_ROOT/chromium_build{,_tsan,_tsan11}/src/out/build/chrome`.
+
+## Performing any command
+
+From the build shell:
+
+```
+# Start IPython 3 interpreter.
+ipython3
+
+# Import the build script:
+import tsan11
+
+# Type `tsan.` and press tab:
+tsan.[TAB]
+tsan11.build                             tsan11.cdschecker_modified_bench_build   tsan11.get_depot_tools                   tsan11.llvm_patched_build_lib
+tsan11.build_all_chromium                tsan11.chromium                          tsan11.get_firefox                       tsan11.llvm_patched_lib_tsan
+tsan11.build_all_firefox                 tsan11.chromium_build                    tsan11.get_llvm                          tsan11.mkdir_p
+...
+
+# Check scripts/tsan.py for details.
+
+# E.g. to build Chromium using tsan11:
+# LLVM with tsan11 will be built if required.
+tsan11.build_chromium(tsan11.config_tsan11)
+
+# E.g. Run the litmus tests with tsan03.
+# LLVM will be built if required.
+tsan11.run_litmus_tests(tsan11.config_tsan)
+```
+
+Again, remember that the build script will
+naively check whether certain files/directories
+exist and potentially skip targets.
+E.g. if you don't delete 
+`TSAN11_BUILD_ROOT/cdschecker_modified_bench_results_tsan11.txt`,
+then the litmus tests for tsan11 will be skipped.
