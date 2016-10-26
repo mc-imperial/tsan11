@@ -146,8 +146,8 @@ ipython3
 # Import the build script:
 import tsan11
 
-# Type `tsan.` and press tab:
-tsan.[TAB]
+# Type `tsan11.` and press tab:
+tsan11.[TAB]
 tsan11.build                             tsan11.cdschecker_modified_bench_build   tsan11.get_depot_tools                   tsan11.llvm_patched_build_lib
 tsan11.build_all_chromium                tsan11.chromium                          tsan11.get_firefox                       tsan11.llvm_patched_lib_tsan
 tsan11.build_all_firefox                 tsan11.chromium_build                    tsan11.get_llvm                          tsan11.mkdir_p
