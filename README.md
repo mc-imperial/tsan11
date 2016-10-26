@@ -133,7 +133,7 @@ build_chromium
 
 This will build Chromium three times.
 You will have to run it manually from
-`TSAN11_BUILD_ROOT/chromium_build{,_tsan,_tsan11}/src/out/build/chrome`.
+`TSAN11_BUILD_ROOT/chromium_build{,_tsan,_tsan11}/src/out/build/chrome --no-sandbox`.
 
 ## Performing any command
 
